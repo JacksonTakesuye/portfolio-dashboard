@@ -54,6 +54,32 @@ export default function Home() {
     }
     loadData()
   }, [])
+useEffect(() => {
+  console.log('SW check:', 'serviceWorker' in navigator, 'PushManager' in window)
+  if ('serviceWorker' in navigator && 'PushManager' in window) {
+    navigator.serviceWorker.register('/sw.js')
+      .then(async (reg) => {
+        console.log('SW registered:', reg.scope)
+        const permission = await Notification.requestPermission()
+        console.log('Permission:', permission)
+        if (permission !== 'granted') return
+        const existing = await reg.pushManager.getSubscription()
+        console.log('Existing sub:', existing)
+        const sub = existing || await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
+        })
+        console.log('Sub:', sub)
+        const res = await fetch('/api/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subscription: sub })
+        })
+        console.log('Subscribe response:', await res.json())
+      })
+      .catch(err => console.log('SW error:', err))
+  }
+}, [])
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -88,8 +114,20 @@ export default function Home() {
         ...prev,
         [modal.id]: { system_id: modal.id, status: form.status, reason: form.reason, notes: form.notes, reported_by: form.reportedBy }
       }))
-      showToast('Status updated successfully')
+     showToast('Status updated successfully')
       setModal(null)
+      if (form.status === 'out-of-service') {
+        await fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemName: modal.name,
+            propertyName: detailProp?.name || '',
+            status: form.status,
+            reason: form.reason
+          })
+        })
+      }
     }
     setSaving(false)
   }
