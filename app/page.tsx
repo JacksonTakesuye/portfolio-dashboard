@@ -310,3 +310,4 @@ export default function Home() {
       {toast&&<div style={{position:'fixed',bottom:'20px',right:'20px',background:'#166534',color:'#fff',padding:'10px 18px',borderRadius:'8px',fontSize:'13px',fontWeight:'500',zIndex:300}}>{toast}</div>}
     </div>
   )
+}
