@@ -83,7 +83,7 @@ export default function Home() {
     if(error){showToast('Error: '+error.message)}else{
       setStatuses((prev:any)=>({...prev,[modal.id]:{system_id:modal.id,status:form.status,reason:form.reason,notes:form.notes}}))
       showToast('Status updated');setModal(null)
-      if(form.status==='out-of-service')await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({systemName:modal.name,propertyName:detailProp?.name||'',status:form.status,reason:form.reason})})
+      if(form.status==='out-of-service'||form.status==='maintenance')await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status,systemName:modal.name,propertyName:detailProp?.name||'',reason:form.reason})})
     }
     setSaving(false)
   }
@@ -91,7 +91,7 @@ export default function Home() {
     if(!detailProp)return;setSavingPsr(true)
     const{data,error}=await supabase.from('psr_reports').insert({...psrForm,property_id:detailProp.id,report_date:new Date().toISOString().split('T')[0]}).select()
     if(error)showToast('Error: '+error.message)
-    else{showToast('PSR saved');setAllPsrReports((prev:any)=>[...(data||[]),...prev]);setPsrForm({});setPsrMode('history')}
+    else{showToast('PSR saved');setAllPsrReports((prev:any)=>[...(data||[]),...prev]);setPsrForm({});setPsrMode('history');await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'psr-submitted',propertyName:detailProp?.name||'',reportDate:new Date().toISOString().split('T')[0]})})}
     setSavingPsr(false)
   }
   const openEditPsr=(r:any)=>{
@@ -197,3 +197,5 @@ export default function Home() {
     </div>
   )
 }
+
+

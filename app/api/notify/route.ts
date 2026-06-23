@@ -1,33 +1,26 @@
 import { NextResponse } from 'next/server'
 import webpush from 'web-push'
 import { createClient } from '@supabase/supabase-js'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-)
-
+const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
 export async function POST(request: Request) {
-  webpush.setVapidDetails(
-    'mailto:jacksont@proequitymgmt.com',
-    process.env.VAPID_PUBLIC_KEY!,
-    process.env.VAPID_PRIVATE_KEY!
-  )
-  const { systemName, propertyName, status, reason } = await request.json()
-  const { data: subscriptions } = await supabase
-    .from('push_subscriptions')
-    .select('subscription')
-  if (!subscriptions || subscriptions.length === 0) {
-    return NextResponse.json({ message: 'No subscribers' })
+  webpush.setVapidDetails('mailto:jacksont@proequitymgmt.com', process.env.VAPID_PUBLIC_KEY!, process.env.VAPID_PRIVATE_KEY!)
+  const { type, systemName, propertyName, reason, reportDate } = await request.json()
+  const { data: subscriptions } = await supabase.from('push_subscriptions').select('subscription')
+  if (!subscriptions || subscriptions.length === 0) return NextResponse.json({ message: 'No subscribers' })
+  let title = ''
+  let body = ''
+  if (type === 'out-of-service') {
+    title = 'System Alert - ' + propertyName
+    body = systemName + ' is Out of Service' + (reason ? ': ' + reason : '')
+  } else if (type === 'maintenance') {
+    title = 'Maintenance Alert - ' + propertyName
+    body = systemName + ' has been marked Under Maintenance' + (reason ? ': ' + reason : '')
+  } else if (type === 'psr-submitted') {
+    title = 'New PSR Report - ' + propertyName
+    body = 'A new PSR report was submitted for ' + propertyName + (reportDate ? ' on ' + reportDate : '')
   }
-  const payload = JSON.stringify({
-    title: 'System Alert - ' + propertyName,
-    body: systemName + ' is now ' + status + (reason ? ': ' + reason : ''),
-  })
-  const results = await Promise.allSettled(
-    subscriptions.map((row: any) =>
-      webpush.sendNotification(row.subscription, payload)
-    )
-  )
+  if (!title) return NextResponse.json({ message: 'Unknown notification type' })
+  const payload = JSON.stringify({ title, body })
+  const results = await Promise.allSettled(subscriptions.map((row: any) => webpush.sendNotification(row.subscription, payload)))
   return NextResponse.json({ sent: results.length })
 }
