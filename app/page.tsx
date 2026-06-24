@@ -19,6 +19,14 @@ const REASONS: Record<string,string[]> = {
 
 const DOC_TYPES = ['Contract','Warranty','Invoice','General','Other']
 
+const DOC_TYPE_COLORS: Record<string,{bg:string,color:string}> = {
+  Contract:{bg:'#eff6ff',color:'#2563eb'},
+  Warranty:{bg:'#f0fdf4',color:'#16a34a'},
+  Invoice: {bg:'#fff7ed',color:'#ea580c'},
+  General: {bg:'#f8fafc',color:'#64748b'},
+  Other:   {bg:'#f5f3ff',color:'#7c3aed'},
+}
+
 // Human-friendly labels for PSR fields, used when building the change summary
 const PSR_FIELD_LABELS: Record<string,string> = {
   work_orders_total:'Work Orders Total', work_orders_over_48h:'Work Orders Over 48h', work_orders_explanation:'Work Orders Explanation',
@@ -81,18 +89,16 @@ const SEC = (title:string, children:any) => (
 const FILE_ICON: Record<string,string> = {pdf:'PDF',xlsx:'XLS',xls:'XLS',jpg:'IMG',jpeg:'IMG',png:'IMG',doc:'DOC',docx:'DOC',csv:'CSV'}
 const getIcon = (name:string) => { const ext = name.split('.').pop()?.toLowerCase()||''; return FILE_ICON[ext]||'FILE' }
 
-const DOC_TYPE_COLORS: Record<string,{bg:string,color:string}> = {
-  Contract:{bg:'#eff6ff',color:'#2563eb'},
-  Warranty:{bg:'#f0fdf4',color:'#16a34a'},
-  Invoice: {bg:'#fff7ed',color:'#ea580c'},
-  General: {bg:'#f8fafc',color:'#64748b'},
-  Other:   {bg:'#f5f3ff',color:'#7c3aed'},
-}
+const fmtDateTime = (ts:string) => ts
+  ? new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
+  : ''
 
 export default function Home() {
   const [properties,    setProperties]    = useState<any[]>([])
   const [systems,       setSystems]        = useState<any[]>([])
   const [statuses,      setStatuses]       = useState<Record<string,any>>({})
+  const [statusHistory, setStatusHistory]  = useState<Record<string,any[]>>({})
+  const [systemNotes,   setSystemNotes]     = useState<Record<string,any[]>>({})
   const [systemInfos,   setSystemInfos]    = useState<Record<string,any>>({})
   const [allPsrReports, setAllPsrReports]  = useState<any[]>([])
   const [documents,     setDocuments]      = useState<any[]>([])
@@ -110,10 +116,26 @@ export default function Home() {
   const [psrSearch,     setPsrSearch]      = useState('')
   const [psrSort,       setPsrSort]        = useState<'newest'|'oldest'>('newest')
   const [expandedPsr,   setExpandedPsr]    = useState<number|null>(null)
-  const [versionsFor,   setVersionsFor]    = useState<any>(null)   // report whose prior versions are open
+  const [versionsFor,   setVersionsFor]    = useState<any>(null)
   const [versionList,   setVersionList]    = useState<any[]>([])
   const [loadingVersions,setLoadingVersions]=useState(false)
   const [expandedVersion,setExpandedVersion]=useState<number|null>(null)
+  const [expandedHistory, setExpandedHistory] = useState<Record<string,boolean>>({})
+  const [noteDrafts,    setNoteDrafts]     = useState<Record<string,{text:string,author:string}>>({})
+  const [savingNote,    setSavingNote]     = useState<string|null>(null)
+  const [systemVendors, setSystemVendors]  = useState<Record<string,any[]>>({})
+  const [eventCosts,    setEventCosts]     = useState<Record<number,any>>({})
+  const [costLogs,      setCostLogs]       = useState<Record<number,any[]>>({})
+  const [eventDocs,     setEventDocs]      = useState<Record<number,any[]>>({})
+  const [expandedVendors, setExpandedVendors] = useState<Record<string,boolean>>({})
+  const [expandedCosts,   setExpandedCosts]   = useState<Record<number,boolean>>({})
+  const [vendorDrafts,  setVendorDrafts]   = useState<Record<string,{vendor_name:string,phone:string,email:string}>>({})
+  const [savingVendor,  setSavingVendor]   = useState<string|null>(null)
+  const [editingVendor, setEditingVendor]  = useState<number|null>(null)
+  const [vendorEditForm,setVendorEditForm] = useState<any>({})
+  const [costDrafts,    setCostDrafts]     = useState<Record<number,{estimated_cost:string,estimated_completion:string,editor:string}>>({})
+  const [savingCost,    setSavingCost]     = useState<number|null>(null)
+  const [uploadingEventDoc, setUploadingEventDoc] = useState<number|null>(null)
   const [tab,           setTab]            = useState('all')
   const [stateFilter,   setStateFilter]    = useState('all')
   const [modal,         setModal]          = useState<any>(null)
@@ -124,10 +146,10 @@ export default function Home() {
   const [savingPsr,     setSavingPsr]      = useState(false)
   const [sysInfoForm,   setSysInfoForm]    = useState<Record<string,any>>({})
   const [savingSysInfo, setSavingSysInfo]  = useState(false)
-  const [dragOver,      setDragOver]       = useState<string|null>(null)  // which bucket is being dragged over
-  const [uploading,     setUploading]      = useState<string|null>(null)  // which bucket is uploading
-  const [docFilter,     setDocFilter]      = useState('all')              // doc type filter
-  const [pendingType,   setPendingType]    = useState<Record<string,string>>({}) // chosen type per bucket before upload
+  const [dragOver,      setDragOver]       = useState<string|null>(null)
+  const [uploading,     setUploading]      = useState<string|null>(null)
+  const [docFilter,     setDocFilter]      = useState('all')
+  const [pendingType,   setPendingType]    = useState<Record<string,string>>({})
   const [isMobile,      setIsMobile]       = useState(false)
   const [mobileTab,     setMobileTab]      = useState<'portfolio'|'alerts'|'settings'>('portfolio')
   const fileInputRefs = useRef<Record<string,HTMLInputElement|null>>({})
@@ -146,24 +168,55 @@ export default function Home() {
       const {data:props,  error:e1} = await supabase.from('properties').select('*')
       const {data:sys,    error:e2} = await supabase.from('systems').select('*')
       const {data:statUpd}          = await supabase.from('status_updates').select('*').order('created_at',{ascending:false})
+      const {data:notes}            = await supabase.from('system_notes').select('*').order('created_at',{ascending:false})
       const {data:sysInfo}          = await supabase.from('system_info').select('*')
       const {data:psr}              = await supabase.from('psr_reports').select('*').order('report_date',{ascending:false})
       const {data:docs}             = await supabase.from('documents').select('*').order('created_at',{ascending:false})
       const {data:alerts}           = await supabase.from('alert_log').select('*').order('created_at',{ascending:false}).limit(50)
+      const {data:vendors}          = await supabase.from('system_vendors').select('*').order('created_at',{ascending:true})
+      const {data:ecosts}           = await supabase.from('event_costs').select('*')
+      const {data:eclogs}           = await supabase.from('event_cost_log').select('*').order('created_at',{ascending:false})
+      const {data:edocs}            = await supabase.from('event_documents').select('*').order('created_at',{ascending:false})
       if(e1) setError(e1.message)
       else if(e2) setError(e2.message)
       else {
         setProperties(props||[])
         setSystems(sys||[])
+        // Latest status per system (for badges) + full history per system (for traceability)
         const ls:Record<string,any>={}
-        ;(statUpd||[]).forEach((s:any)=>{ if(!ls[s.system_id]) ls[s.system_id]=s })
+        const hist:Record<string,any[]>={}
+        ;(statUpd||[]).forEach((s:any)=>{
+          if(!ls[s.system_id]) ls[s.system_id]=s
+          ;(hist[s.system_id] = hist[s.system_id]||[]).push(s)
+        })
         setStatuses(ls)
+        setStatusHistory(hist)
+        // Notes grouped by system, newest first
+        const nm:Record<string,any[]>={}
+        ;(notes||[]).forEach((n:any)=>{ (nm[n.system_id] = nm[n.system_id]||[]).push(n) })
+        setSystemNotes(nm)
         const im:Record<string,any>={}
         ;(sysInfo||[]).forEach((s:any)=>{ im[s.system_id]=s })
         setSystemInfos(im)
         setAllPsrReports(psr||[])
         setDocuments(docs||[])
         setAlertLog(alerts||[])
+        // Vendors grouped by system
+        const vm:Record<string,any[]>={}
+        ;(vendors||[]).forEach((v:any)=>{ (vm[v.system_id] = vm[v.system_id]||[]).push(v) })
+        setSystemVendors(vm)
+        // Event costs keyed by status_update_id
+        const cm:Record<number,any>={}
+        ;(ecosts||[]).forEach((c:any)=>{ cm[c.status_update_id]=c })
+        setEventCosts(cm)
+        // Cost edit logs keyed by event_cost_id
+        const clm:Record<number,any[]>={}
+        ;(eclogs||[]).forEach((l:any)=>{ (clm[l.event_cost_id] = clm[l.event_cost_id]||[]).push(l) })
+        setCostLogs(clm)
+        // Event documents keyed by status_update_id
+        const edm:Record<number,any[]>={}
+        ;(edocs||[]).forEach((d:any)=>{ (edm[d.status_update_id] = edm[d.status_update_id]||[]).push(d) })
+        setEventDocs(edm)
       }
       setLoading(false)
     }
@@ -197,19 +250,133 @@ export default function Home() {
   const saveStatus = async () => {
     if(!modal) return
     setSaving(true)
-    const {error} = await supabase.from('status_updates').insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:form.reportedBy||'Staff'})
+    const createdAt = new Date().toISOString()
+    const {data, error} = await supabase.from('status_updates')
+      .insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:form.reportedBy||'Staff'})
+      .select()
     if(error){ showToast('Error: '+error.message) }
     else {
-      setStatuses((prev:any)=>({...prev,[modal.id]:{system_id:modal.id,status:form.status,reason:form.reason,notes:form.notes}}))
+      const inserted = (data&&data[0]) || {system_id:modal.id,status:form.status,reason:form.reason||null,notes:form.notes||null,reported_by:form.reportedBy||'Staff',created_at:createdAt}
+      setStatuses((prev:any)=>({...prev,[modal.id]:inserted}))
+      // Prepend to history so the timeline reflects the change without a reload
+      setStatusHistory((prev:any)=>({...prev,[modal.id]:[inserted,...(prev[modal.id]||[])]}))
       showToast('Status updated')
       setModal(null)
       if(form.status==='out-of-service'||form.status==='maintenance'){
-        const newAlert = {type:form.status, property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:new Date().toISOString()}
+        const newAlert = {type:form.status, property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:createdAt}
         setAlertLog((prev:any)=>[newAlert,...prev])
         await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status, systemName:modal.name, propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', reason:form.reason})})
       }
     }
     setSaving(false)
+  }
+
+  const saveNote = async (systemId:string) => {
+    const draft = noteDrafts[systemId]
+    if(!draft || !draft.text.trim() || !draft.author.trim()) return
+    setSavingNote(systemId)
+    const createdAt = new Date().toISOString()
+    const {data, error} = await supabase.from('system_notes')
+      .insert({system_id:systemId, note:draft.text.trim(), author:draft.author.trim()})
+      .select()
+    if(error){ showToast('Error: '+error.message) }
+    else {
+      const inserted = (data&&data[0]) || {system_id:systemId, note:draft.text.trim(), author:draft.author.trim(), created_at:createdAt}
+      setSystemNotes((prev:any)=>({...prev,[systemId]:[inserted,...(prev[systemId]||[])]}))
+      setNoteDrafts((prev:any)=>({...prev,[systemId]:{text:'',author:draft.author}}))
+      showToast('Note added')
+      const sys = systems.find((s:any)=>s.id===systemId)
+      const newAlert = {type:'note-added', property_name:detailProp?.name||'', system_name:sys?.name||'', reason:draft.text.trim(), created_at:createdAt}
+      setAlertLog((prev:any)=>[newAlert,...prev])
+      await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'note-added', systemName:sys?.name||'', propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', noteAuthor:draft.author.trim(), noteText:draft.text.trim()})})
+    }
+    setSavingNote(null)
+  }
+
+  // ─── Vendors ──────────────────────────────────────────────────────────────────
+  const saveVendor = async (systemId:string) => {
+    const draft = vendorDrafts[systemId]
+    if(!draft || !draft.vendor_name.trim()) return
+    setSavingVendor(systemId)
+    const createdAt = new Date().toISOString()
+    const {data, error} = await supabase.from('system_vendors')
+      .insert({system_id:systemId, vendor_name:draft.vendor_name.trim(), phone:draft.phone||null, email:draft.email||null})
+      .select()
+    if(error){ showToast('Error: '+error.message) }
+    else {
+      const inserted = (data&&data[0]) || {system_id:systemId, vendor_name:draft.vendor_name.trim(), phone:draft.phone, email:draft.email, created_at:createdAt}
+      setSystemVendors((prev:any)=>({...prev,[systemId]:[...(prev[systemId]||[]),inserted]}))
+      setVendorDrafts((prev:any)=>({...prev,[systemId]:{vendor_name:'',phone:'',email:''}}))
+      showToast('Vendor added')
+    }
+    setSavingVendor(null)
+  }
+
+  const saveVendorEdit = async (vendorId:number, systemId:string) => {
+    const {error} = await supabase.from('system_vendors')
+      .update({vendor_name:vendorEditForm.vendor_name, phone:vendorEditForm.phone||null, email:vendorEditForm.email||null})
+      .eq('id',vendorId)
+    if(error){ showToast('Error: '+error.message); return }
+    setSystemVendors((prev:any)=>({...prev,[systemId]:(prev[systemId]||[]).map((v:any)=>v.id===vendorId?{...v,...vendorEditForm}:v)}))
+    setEditingVendor(null)
+    setVendorEditForm({})
+    showToast('Vendor updated')
+  }
+
+  // ─── Event costs (per status event, edits logged) ─────────────────────────────
+  const saveCost = async (statusEvent:any, systemId:string) => {
+    const draft = costDrafts[statusEvent.id]
+    if(!draft || !draft.editor.trim()){ showToast('Editor name required'); return }
+    setSavingCost(statusEvent.id)
+    const now = new Date().toISOString()
+    const existing = eventCosts[statusEvent.id]
+    const newCost = draft.estimated_cost===''?null:Number(draft.estimated_cost)
+    const newEta  = draft.estimated_completion||null
+
+    // Build a human-readable diff of what changed
+    const diffs:string[] = []
+    const oldCost = existing?.estimated_cost ?? null
+    const oldEta  = existing?.estimated_completion ?? null
+    if(String(oldCost??'')!==String(newCost??'')) diffs.push('Estimated Cost: '+(oldCost!=null?'$'+oldCost:'—')+' -> '+(newCost!=null?'$'+newCost:'—'))
+    if(String(oldEta??'')!==String(newEta??''))   diffs.push('Est. Completion: '+(oldEta||'—')+' -> '+(newEta||'—'))
+    const changeStr = diffs.length?diffs.join(' | '):'No field changes'
+
+    if(existing){
+      const {error} = await supabase.from('event_costs')
+        .update({estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now})
+        .eq('id',existing.id)
+      if(error){ showToast('Error: '+error.message); setSavingCost(null); return }
+      await supabase.from('event_cost_log').insert({event_cost_id:existing.id, edited_by:draft.editor.trim(), changes:changeStr})
+      const updated = {...existing, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now}
+      setEventCosts((prev:any)=>({...prev,[statusEvent.id]:updated}))
+      setCostLogs((prev:any)=>({...prev,[existing.id]:[{edited_by:draft.editor.trim(),changes:changeStr,created_at:now},...(prev[existing.id]||[])]}))
+    } else {
+      const {data, error} = await supabase.from('event_costs')
+        .insert({status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now})
+        .select()
+      if(error){ showToast('Error: '+error.message); setSavingCost(null); return }
+      const inserted = (data&&data[0]) || {id:Date.now(), status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now}
+      await supabase.from('event_cost_log').insert({event_cost_id:inserted.id, edited_by:draft.editor.trim(), changes:'Initial entry — '+changeStr})
+      setEventCosts((prev:any)=>({...prev,[statusEvent.id]:inserted}))
+      setCostLogs((prev:any)=>({...prev,[inserted.id]:[{edited_by:draft.editor.trim(),changes:'Initial entry — '+changeStr,created_at:now}]}))
+    }
+    showToast('Cost / ETA saved')
+    setSavingCost(null)
+  }
+
+  const uploadEventDoc = async (statusEvent:any, systemId:string, file:File) => {
+    setUploadingEventDoc(statusEvent.id)
+    const path = systemId+'/event-'+statusEvent.id+'/'+Date.now()+'-'+file.name
+    const {error:upErr} = await supabase.storage.from('documents').upload(path,file)
+    if(upErr){ showToast('Upload error: '+upErr.message); setUploadingEventDoc(null); return }
+    const {data, error:dbErr} = await supabase.from('event_documents')
+      .insert({status_update_id:statusEvent.id, system_id:systemId, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:'Staff'})
+      .select()
+    if(dbErr){ showToast('DB error: '+dbErr.message); setUploadingEventDoc(null); return }
+    const inserted = (data&&data[0]) || {status_update_id:statusEvent.id, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:'Staff', created_at:new Date().toISOString()}
+    setEventDocs((prev:any)=>({...prev,[statusEvent.id]:[inserted,...(prev[statusEvent.id]||[])]}))
+    showToast('File uploaded')
+    setUploadingEventDoc(null)
   }
 
   const savePsr = async () => {
@@ -438,6 +605,10 @@ export default function Home() {
                 const st = statuses[sys.id]
                 const statusKey = st?.status||'in-service'
                 const meta = STATUS_META[statusKey]
+                const history = statusHistory[sys.id]||[]
+                const notes   = systemNotes[sys.id]||[]
+                const historyOpen = !!expandedHistory[sys.id]
+                const draft = noteDrafts[sys.id]||{text:'',author:''}
                 return (
                   <div key={sys.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',marginBottom:'10px',background:'#fafafa'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'6px'}}>
@@ -450,6 +621,195 @@ export default function Home() {
                     {st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
                     {st?.notes  && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
                     <button onClick={()=>openModal(sys)} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>Update Status</button>
+
+                    {/* ── Status history (traceability) ── */}
+                    <div style={{marginTop:'10px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
+                      <div
+                        onClick={()=>setExpandedHistory(prev=>({...prev,[sys.id]:!historyOpen}))}
+                        style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}
+                      >
+                        <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Status History {history.length>0?'('+history.length+')':''}</span>
+                        <span style={{fontSize:'11px',color:'#94a3b8'}}>{historyOpen?'▲':'▼'}</span>
+                      </div>
+                      {historyOpen && (
+                        <div style={{marginTop:'8px'}}>
+                          {history.length===0
+                            ? <div style={{fontSize:'11px',color:'#94a3b8'}}>No status changes recorded.</div>
+                            : history.map((h:any,i:number)=>{
+                                const hm = STATUS_META[h.status]||STATUS_META['in-service']
+                                return (
+                                  <div key={h.id||i} style={{borderLeft:'2px solid '+hm.border,paddingLeft:'10px',marginBottom:'8px'}}>
+                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'2px'}}>
+                                      <span style={{background:hm.bg,color:hm.color,border:'1px solid '+hm.border,padding:'1px 7px',borderRadius:'10px',fontSize:'10px',fontWeight:'600'}}>{hm.label}</span>
+                                      <span style={{fontSize:'10px',color:'#94a3b8'}}>{fmtDateTime(h.created_at)}</span>
+                                    </div>
+                                    {h.reason && <div style={{fontSize:'10px',color:'#dc2626'}}>{h.reason}</div>}
+                                    {h.notes  && <div style={{fontSize:'10px',color:'#64748b',fontStyle:'italic'}}>{h.notes}</div>}
+                                    <div style={{fontSize:'10px',color:'#94a3b8',marginTop:'1px'}}>by {h.reported_by||'Staff'}</div>
+
+                                    {/* Cost / ETA / files — only meaningful for non-in-service events with a saved id */}
+                                    {h.id && h.status!=='in-service' && (()=>{
+                                      const cost = eventCosts[h.id]
+                                      const logs = cost?costLogs[cost.id]||[]:[]
+                                      const edocs = eventDocs[h.id]||[]
+                                      const costOpen = !!expandedCosts[h.id]
+                                      const cd = costDrafts[h.id]||{estimated_cost:cost?.estimated_cost??'',estimated_completion:cost?.estimated_completion??'',editor:''}
+                                      return (
+                                        <div style={{marginTop:'6px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px'}}>
+                                          <div onClick={()=>setExpandedCosts(prev=>({...prev,[h.id]:!costOpen}))} style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}>
+                                            <span style={{fontSize:'10px',fontWeight:'700',color:'#475569'}}>
+                                              Cost / ETA / Files
+                                              {cost?.estimated_cost!=null && <span style={{marginLeft:'6px',color:'#0f766e'}}>${cost.estimated_cost}</span>}
+                                              {cost?.estimated_completion && <span style={{marginLeft:'6px',color:'#64748b'}}>ETA {cost.estimated_completion}</span>}
+                                            </span>
+                                            <span style={{fontSize:'10px',color:'#94a3b8'}}>{costOpen?'▲':'▼'}</span>
+                                          </div>
+                                          {costOpen && (
+                                            <div style={{marginTop:'8px'}}>
+                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Cost ($)</div>
+                                              <input value={cd.estimated_cost} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_cost:e.target.value}}))} placeholder='0.00' inputMode='decimal' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Completion Date</div>
+                                              <input type='date' value={cd.estimated_completion} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_completion:e.target.value}}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Your Name (required to save)</div>
+                                              <input value={cd.editor} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,editor:e.target.value}}))} placeholder='Editor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                              <button onClick={()=>saveCost(h,sys.id)} disabled={savingCost===h.id||!cd.editor.trim()} style={{width:'100%',padding:'6px',background:!cd.editor.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!cd.editor.trim()?'default':'pointer',marginBottom:'6px'}}>
+                                                {savingCost===h.id?'Saving...':(cost?'Update Cost / ETA':'Save Cost / ETA')}
+                                              </button>
+
+                                              {/* Files for this event */}
+                                              <label style={{display:'block',width:'100%',padding:'6px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
+                                                {uploadingEventDoc===h.id?'Uploading...':'+ Add Invoice / Quote'}
+                                                <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadEventDoc(h,sys.id,f)}}/>
+                                              </label>
+                                              {edocs.map((d:any,di:number)=>(
+                                                <div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 6px',background:'#f8fafc',borderRadius:'5px',marginBottom:'4px'}}>
+                                                  <span style={{fontSize:'10px',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'150px'}}>{d.file_name}</span>
+                                                  <button onClick={()=>viewDocument(d.file_path)} style={{padding:'2px 8px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>View</button>
+                                                </div>
+                                              ))}
+
+                                              {/* Edit log */}
+                                              {logs.length>0 && (
+                                                <div style={{marginTop:'6px',borderTop:'1px solid #f1f5f9',paddingTop:'6px'}}>
+                                                  <div style={{fontSize:'9px',fontWeight:'700',color:'#94a3b8',marginBottom:'3px'}}>Edit History</div>
+                                                  {logs.map((l:any,li:number)=>(
+                                                    <div key={li} style={{fontSize:'9px',color:'#64748b',marginBottom:'2px'}}>
+                                                      <span style={{fontWeight:'600',color:'#334155'}}>{l.edited_by}</span> · {fmtDateTime(l.created_at)}<br/>
+                                                      <span style={{color:'#92400e'}}>{l.changes}</span>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )
+                                    })()}
+                                  </div>
+                                )
+                              })
+                          }
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ── Vendor information (collapsible, multiple, editable) ── */}
+                    <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
+                      <div
+                        onClick={()=>setExpandedVendors(prev=>({...prev,[sys.id]:!expandedVendors[sys.id]}))}
+                        style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}
+                      >
+                        <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Vendor Information {(systemVendors[sys.id]||[]).length>0?'('+(systemVendors[sys.id]||[]).length+')':''}</span>
+                        <span style={{fontSize:'11px',color:'#94a3b8'}}>{expandedVendors[sys.id]?'▲':'▼'}</span>
+                      </div>
+                      {expandedVendors[sys.id] && (()=>{
+                        const vendors = systemVendors[sys.id]||[]
+                        const vd = vendorDrafts[sys.id]||{vendor_name:'',phone:'',email:''}
+                        return (
+                          <div style={{marginTop:'8px'}}>
+                            {vendors.map((v:any,vi:number)=>(
+                              <div key={v.id||vi} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px',marginBottom:'6px'}}>
+                                {editingVendor===v.id ? (
+                                  <div>
+                                    <input value={vendorEditForm.vendor_name||''} onChange={e=>setVendorEditForm((p:any)=>({...p,vendor_name:e.target.value}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                    <input value={vendorEditForm.phone||''} onChange={e=>setVendorEditForm((p:any)=>({...p,phone:e.target.value}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                    <input value={vendorEditForm.email||''} onChange={e=>setVendorEditForm((p:any)=>({...p,email:e.target.value}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                    <div style={{display:'flex',gap:'4px'}}>
+                                      <button onClick={()=>{setEditingVendor(null);setVendorEditForm({})}} style={{flex:1,padding:'5px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>
+                                      <button onClick={()=>saveVendorEdit(v.id,sys.id)} style={{flex:1,padding:'5px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Save</button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                                      <span style={{fontSize:'11px',fontWeight:'600',color:'#1e293b'}}>{v.vendor_name}</span>
+                                      <button onClick={()=>{setEditingVendor(v.id);setVendorEditForm({vendor_name:v.vendor_name,phone:v.phone,email:v.email})}} style={{padding:'1px 6px',background:'#f1f5f9',color:'#475569',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>Edit</button>
+                                    </div>
+                                    {v.phone && <div style={{fontSize:'10px',color:'#64748b'}}>{v.phone}</div>}
+                                    {v.email && <div style={{fontSize:'10px',color:'#2563eb'}}>{v.email}</div>}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            <div style={{background:'#f8fafc',borderRadius:'6px',padding:'8px'}}>
+                              <input value={vd.vendor_name} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,vendor_name:e.target.value}}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                              <input value={vd.phone} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,phone:e.target.value}}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                              <input value={vd.email} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,email:e.target.value}}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                              <button onClick={()=>saveVendor(sys.id)} disabled={savingVendor===sys.id||!vd.vendor_name.trim()} style={{width:'100%',padding:'6px',background:!vd.vendor_name.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!vd.vendor_name.trim()?'default':'pointer'}}>
+                                {savingVendor===sys.id?'Adding...':'+ Add Vendor'}
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </div>
+
+                    {/* ── System notes (append-only) ── */}
+                    <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
+                      <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'6px'}}>Notes {notes.length>0?'('+notes.length+')':''}</div>
+                      <input
+                        value={draft.author}
+                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,author:e.target.value}}))}
+                        placeholder='Your name'
+                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}
+                      />
+                      <textarea
+                        value={draft.text}
+                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,text:e.target.value}}))}
+                        placeholder='Add a note...'
+                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',minHeight:'48px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'5px'}}
+                      />
+                      <button
+                        onClick={()=>saveNote(sys.id)}
+                        disabled={savingNote===sys.id||!draft.text.trim()||!draft.author.trim()}
+                        style={{width:'100%',padding:'6px',background:(!draft.text.trim()||!draft.author.trim())?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:(!draft.text.trim()||!draft.author.trim())?'default':'pointer'}}
+                      >
+                        {savingNote===sys.id?'Adding...':'Add Note'}
+                      </button>
+                      <div style={{marginTop:'8px'}}>
+                        {notes.length===0
+                          ? <div style={{fontSize:'11px',color:'#94a3b8'}}>No notes yet.</div>
+                          : notes.map((n:any,i:number)=>{
+                              const isLatest = i===0
+                              return (
+                                <div key={n.id||i} style={{
+                                  background:isLatest?'#fffbeb':'#fff',
+                                  border:'1px solid '+(isLatest?'#fde68a':'#e2e8f0'),
+                                  borderRadius:'6px',padding:'8px',marginBottom:'6px'
+                                }}>
+                                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'3px'}}>
+                                    <span style={{fontSize:'10px',fontWeight:'700',color:'#334155'}}>
+                                      {n.author||'Staff'}{isLatest && <span style={{marginLeft:'6px',background:'#fde68a',color:'#92400e',padding:'0 6px',borderRadius:'8px',fontSize:'9px'}}>Latest</span>}
+                                    </span>
+                                    <span style={{fontSize:'9px',color:'#94a3b8'}}>{fmtDateTime(n.created_at)}</span>
+                                  </div>
+                                  <div style={{fontSize:'11px',color:'#1e293b',whiteSpace:'pre-wrap'}}>{n.note}</div>
+                                </div>
+                              )
+                            })
+                        }
+                      </div>
+                    </div>
                   </div>
                 )
               })
@@ -784,10 +1144,11 @@ export default function Home() {
             const isOut   = a.type==='out-of-service'
             const isMaint = a.type==='maintenance'
             const isPsr   = a.type==='psr-submitted'
+            const isNote  = a.type==='note-added'
             const isEdit  = a.type==='psr-edited'
-            const color  = isOut?'#dc2626':isMaint?'#d97706':isEdit?'#7c3aed':'#0369a1'
-            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isEdit?'#f5f3ff':'#eff6ff'
-            const label  = isOut?'Out of Service':isMaint?'Maintenance':isEdit?'PSR Edited':'PSR Submitted'
+            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':'#0369a1'
+            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':'#eff6ff'
+            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':'PSR Submitted'
             const dateStr = a.created_at
               ? new Date(a.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
               : ''

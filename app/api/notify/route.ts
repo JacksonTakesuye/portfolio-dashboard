@@ -14,7 +14,7 @@ export async function POST(request: Request) {
     process.env.VAPID_PRIVATE_KEY!
   )
 
-  const { type, systemName, propertyName, propertyId, reason, reportDate, editedBy, changeSummary } = await request.json()
+  const { type, systemName, propertyName, propertyId, reason, reportDate, noteAuthor, noteText, editedBy, changeSummary } = await request.json()
 
   let title = ''
   let body  = ''
@@ -28,6 +28,9 @@ export async function POST(request: Request) {
   } else if (type === 'psr-submitted') {
     title = 'New PSR Report - ' + propertyName
     body  = 'A new PSR report was submitted for ' + propertyName + (reportDate ? ' on ' + reportDate : '')
+  } else if (type === 'note-added') {
+    title = 'New Note - ' + propertyName
+    body  = (noteAuthor || 'Staff') + ' added a note on ' + systemName + ': ' + (noteText || '')
   } else if (type === 'psr-edited') {
     title = 'PSR Report Edited - ' + propertyName
     body  = (editedBy || 'Someone') + ' edited the ' + (reportDate ? reportDate + ' ' : '') + 'report'
