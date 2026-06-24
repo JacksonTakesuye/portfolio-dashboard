@@ -17,6 +17,46 @@ const REASONS: Record<string,string[]> = {
   gate:     ['Power failure','Sensor malfunction','Physical damage','Scheduled maintenance','Other'],
 }
 
+const DOC_TYPES = ['Contract','Warranty','Invoice','General','Other']
+
+// Human-friendly labels for PSR fields, used when building the change summary
+const PSR_FIELD_LABELS: Record<string,string> = {
+  work_orders_total:'Work Orders Total', work_orders_over_48h:'Work Orders Over 48h', work_orders_explanation:'Work Orders Explanation',
+  make_readies_total:'Make Readies Total', make_readies_over_7d:'Make Readies Over 7 Days',
+  oncall_staff:'On-Call Staff', vacation_pto:'Vacation / PTO', shop_steward:'Shop Steward', preventative_maintenance:'Preventative Maintenance', open_maintenance_position:'Open Maintenance Position',
+  pool_operational:'Pool Status', spa_operational:'Spa Status', chemical_levels_checked:'Chemical Levels Checked', cya_tracking_updated:'CYA Tracking Updated', pool_furniture_condition:'Pool Furniture Condition', pool_gates_secured:'Pool Gates Secured', pool_area_cleanliness:'Pool Area Cleanliness', pool_spa_notes:'Pool / Spa Notes',
+  fitness_equipment:'Equipment Condition', fitness_cleanliness:'Cleanliness', fitness_supplies_stocked:'Supplies Stocked', fitness_access_control:'Access Control', fitness_notes:'Fitness Notes',
+  grill_condition:'Grill Condition', grill_area_cleanliness:'Grill Area Cleanliness', propane_full:'Propane Full', propane_needed:'Propane Needed', charcoal_full:'Charcoal Full', charcoal_needed:'Charcoal Needed', grill_notes:'Grill Notes',
+  mailboxes_secured:'Mailboxes Secured', parcel_lockers_working:'Parcel Lockers Working', mailbox_area_cleanliness:'Mailbox Area Cleanliness', mailbox_lighting:'Lighting Operational', mailbox_notes:'Mailbox Notes',
+  clubhouse_fireplace_operational:'Clubhouse Fireplace', outdoor_fireplace_operational:'Outdoor Fireplace', fireplace_notes:'Fireplace Notes',
+  elevator_1:'Elevator 1', elevator_2:'Elevator 2', elevator_3:'Elevator 3', elevator_4:'Elevator 4', elevator_5:'Elevator 5', elevator_6:'Elevator 6', elevator_notes:'Elevator Notes',
+  tv_clubhouse:'Clubhouse TVs', tv_pool:'Pool TVs', tv_fitness:'Fitness Center TVs', tv_lounge:'Lounge TVs', tv_notes:'TV Notes',
+  gate_entry:'Entry Gate', gate_exit:'Exit Gate', gate_pedestrian:'Pedestrian Gate', gate_access_system:'Access System', gate_notes:'Gate Notes',
+  common_clubhouse:'Clubhouse', common_hallways:'Hallways', common_breezeways:'Breezeways', common_parking:'Parking', common_landscaping:'Landscaping', common_sidewalks:'Sidewalks', common_trash:'Trash', common_area_notes:'Common Area Notes',
+  dog_station_cleaned:'Stations Cleaned', dog_station_damaged:'Damage Present', dog_station_bags:'Bags Stocked', dog_station_notes:'Dog Station Notes',
+}
+
+// Fields we never count as "edits" when diffing (metadata / audit columns)
+const PSR_IGNORE_FIELDS = ['id','property_id','report_date','created_at','edited_by','edited_at','edit_notes']
+
+// Build a readable summary of what changed between an old report and the edited form
+const buildPsrDiff = (oldReport:any, newForm:any) => {
+  const changes:string[] = []
+  const keys = new Set([...Object.keys(oldReport||{}), ...Object.keys(newForm||{})])
+  keys.forEach((k)=>{
+    if(PSR_IGNORE_FIELDS.includes(k)) return
+    const before = oldReport?.[k]
+    const after  = newForm?.[k]
+    const normB = (before===null||before===undefined) ? '' : String(before)
+    const normA = (after===null||after===undefined)  ? '' : String(after)
+    if(normB !== normA){
+      const label = PSR_FIELD_LABELS[k] || k
+      changes.push(label + ': ' + (normB===''?'(blank)':normB) + ' → ' + (normA===''?'(blank)':normA))
+    }
+  })
+  return changes
+}
+
 const SI = (label:string, f:string, form:any, setForm:any) => (
   <div style={{marginBottom:'6px'}}>
     <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>{label}</div>
@@ -41,16 +81,18 @@ const SEC = (title:string, children:any) => (
 const FILE_ICON: Record<string,string> = {pdf:'PDF',xlsx:'XLS',xls:'XLS',jpg:'IMG',jpeg:'IMG',png:'IMG',doc:'DOC',docx:'DOC',csv:'CSV'}
 const getIcon = (name:string) => { const ext = name.split('.').pop()?.toLowerCase()||''; return FILE_ICON[ext]||'FILE' }
 
-const fmtDateTime = (ts:string) => ts
-  ? new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
-  : ''
+const DOC_TYPE_COLORS: Record<string,{bg:string,color:string}> = {
+  Contract:{bg:'#eff6ff',color:'#2563eb'},
+  Warranty:{bg:'#f0fdf4',color:'#16a34a'},
+  Invoice: {bg:'#fff7ed',color:'#ea580c'},
+  General: {bg:'#f8fafc',color:'#64748b'},
+  Other:   {bg:'#f5f3ff',color:'#7c3aed'},
+}
 
 export default function Home() {
   const [properties,    setProperties]    = useState<any[]>([])
   const [systems,       setSystems]        = useState<any[]>([])
   const [statuses,      setStatuses]       = useState<Record<string,any>>({})
-  const [statusHistory, setStatusHistory]  = useState<Record<string,any[]>>({})
-  const [systemNotes,   setSystemNotes]     = useState<Record<string,any[]>>({})
   const [systemInfos,   setSystemInfos]    = useState<Record<string,any>>({})
   const [allPsrReports, setAllPsrReports]  = useState<any[]>([])
   const [documents,     setDocuments]      = useState<any[]>([])
@@ -68,22 +110,10 @@ export default function Home() {
   const [psrSearch,     setPsrSearch]      = useState('')
   const [psrSort,       setPsrSort]        = useState<'newest'|'oldest'>('newest')
   const [expandedPsr,   setExpandedPsr]    = useState<number|null>(null)
-  const [expandedHistory, setExpandedHistory] = useState<Record<string,boolean>>({})
-  const [noteDrafts,    setNoteDrafts]     = useState<Record<string,{text:string,author:string}>>({})
-  const [savingNote,    setSavingNote]     = useState<string|null>(null)
-  const [systemVendors, setSystemVendors]  = useState<Record<string,any[]>>({})
-  const [eventCosts,    setEventCosts]     = useState<Record<number,any>>({})
-  const [costLogs,      setCostLogs]       = useState<Record<number,any[]>>({})
-  const [eventDocs,     setEventDocs]      = useState<Record<number,any[]>>({})
-  const [expandedVendors, setExpandedVendors] = useState<Record<string,boolean>>({})
-  const [expandedCosts,   setExpandedCosts]   = useState<Record<number,boolean>>({})
-  const [vendorDrafts,  setVendorDrafts]   = useState<Record<string,{vendor_name:string,phone:string,email:string}>>({})
-  const [savingVendor,  setSavingVendor]   = useState<string|null>(null)
-  const [editingVendor, setEditingVendor]  = useState<number|null>(null)
-  const [vendorEditForm,setVendorEditForm] = useState<any>({})
-  const [costDrafts,    setCostDrafts]     = useState<Record<number,{estimated_cost:string,estimated_completion:string,editor:string}>>({})
-  const [savingCost,    setSavingCost]     = useState<number|null>(null)
-  const [uploadingEventDoc, setUploadingEventDoc] = useState<number|null>(null)
+  const [versionsFor,   setVersionsFor]    = useState<any>(null)   // report whose prior versions are open
+  const [versionList,   setVersionList]    = useState<any[]>([])
+  const [loadingVersions,setLoadingVersions]=useState(false)
+  const [expandedVersion,setExpandedVersion]=useState<number|null>(null)
   const [tab,           setTab]            = useState('all')
   const [stateFilter,   setStateFilter]    = useState('all')
   const [modal,         setModal]          = useState<any>(null)
@@ -94,11 +124,13 @@ export default function Home() {
   const [savingPsr,     setSavingPsr]      = useState(false)
   const [sysInfoForm,   setSysInfoForm]    = useState<Record<string,any>>({})
   const [savingSysInfo, setSavingSysInfo]  = useState(false)
-  const [dragOver,      setDragOver]       = useState(false)
-  const [uploading,     setUploading]      = useState(false)
+  const [dragOver,      setDragOver]       = useState<string|null>(null)  // which bucket is being dragged over
+  const [uploading,     setUploading]      = useState<string|null>(null)  // which bucket is uploading
+  const [docFilter,     setDocFilter]      = useState('all')              // doc type filter
+  const [pendingType,   setPendingType]    = useState<Record<string,string>>({}) // chosen type per bucket before upload
   const [isMobile,      setIsMobile]       = useState(false)
   const [mobileTab,     setMobileTab]      = useState<'portfolio'|'alerts'|'settings'>('portfolio')
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRefs = useRef<Record<string,HTMLInputElement|null>>({})
 
   // ─── Detect mobile ───────────────────────────────────────────────────────────
   useEffect(()=>{
@@ -114,55 +146,24 @@ export default function Home() {
       const {data:props,  error:e1} = await supabase.from('properties').select('*')
       const {data:sys,    error:e2} = await supabase.from('systems').select('*')
       const {data:statUpd}          = await supabase.from('status_updates').select('*').order('created_at',{ascending:false})
-      const {data:notes}            = await supabase.from('system_notes').select('*').order('created_at',{ascending:false})
       const {data:sysInfo}          = await supabase.from('system_info').select('*')
       const {data:psr}              = await supabase.from('psr_reports').select('*').order('report_date',{ascending:false})
       const {data:docs}             = await supabase.from('documents').select('*').order('created_at',{ascending:false})
       const {data:alerts}           = await supabase.from('alert_log').select('*').order('created_at',{ascending:false}).limit(50)
-      const {data:vendors}          = await supabase.from('system_vendors').select('*').order('created_at',{ascending:true})
-      const {data:ecosts}           = await supabase.from('event_costs').select('*')
-      const {data:eclogs}           = await supabase.from('event_cost_log').select('*').order('created_at',{ascending:false})
-      const {data:edocs}            = await supabase.from('event_documents').select('*').order('created_at',{ascending:false})
       if(e1) setError(e1.message)
       else if(e2) setError(e2.message)
       else {
         setProperties(props||[])
         setSystems(sys||[])
-        // Latest status per system (for badges) + full history per system (for traceability)
         const ls:Record<string,any>={}
-        const hist:Record<string,any[]>={}
-        ;(statUpd||[]).forEach((s:any)=>{
-          if(!ls[s.system_id]) ls[s.system_id]=s
-          ;(hist[s.system_id] = hist[s.system_id]||[]).push(s)
-        })
+        ;(statUpd||[]).forEach((s:any)=>{ if(!ls[s.system_id]) ls[s.system_id]=s })
         setStatuses(ls)
-        setStatusHistory(hist)
-        // Notes grouped by system, newest first
-        const nm:Record<string,any[]>={}
-        ;(notes||[]).forEach((n:any)=>{ (nm[n.system_id] = nm[n.system_id]||[]).push(n) })
-        setSystemNotes(nm)
         const im:Record<string,any>={}
         ;(sysInfo||[]).forEach((s:any)=>{ im[s.system_id]=s })
         setSystemInfos(im)
         setAllPsrReports(psr||[])
         setDocuments(docs||[])
         setAlertLog(alerts||[])
-        // Vendors grouped by system
-        const vm:Record<string,any[]>={}
-        ;(vendors||[]).forEach((v:any)=>{ (vm[v.system_id] = vm[v.system_id]||[]).push(v) })
-        setSystemVendors(vm)
-        // Event costs keyed by status_update_id
-        const cm:Record<number,any>={}
-        ;(ecosts||[]).forEach((c:any)=>{ cm[c.status_update_id]=c })
-        setEventCosts(cm)
-        // Cost edit logs keyed by event_cost_id
-        const clm:Record<number,any[]>={}
-        ;(eclogs||[]).forEach((l:any)=>{ (clm[l.event_cost_id] = clm[l.event_cost_id]||[]).push(l) })
-        setCostLogs(clm)
-        // Event documents keyed by status_update_id
-        const edm:Record<number,any[]>={}
-        ;(edocs||[]).forEach((d:any)=>{ (edm[d.status_update_id] = edm[d.status_update_id]||[]).push(d) })
-        setEventDocs(edm)
       }
       setLoading(false)
     }
@@ -196,133 +197,19 @@ export default function Home() {
   const saveStatus = async () => {
     if(!modal) return
     setSaving(true)
-    const createdAt = new Date().toISOString()
-    const {data, error} = await supabase.from('status_updates')
-      .insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:form.reportedBy||'Staff'})
-      .select()
+    const {error} = await supabase.from('status_updates').insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:form.reportedBy||'Staff'})
     if(error){ showToast('Error: '+error.message) }
     else {
-      const inserted = (data&&data[0]) || {system_id:modal.id,status:form.status,reason:form.reason||null,notes:form.notes||null,reported_by:form.reportedBy||'Staff',created_at:createdAt}
-      setStatuses((prev:any)=>({...prev,[modal.id]:inserted}))
-      // Prepend to history so the timeline reflects the change without a reload
-      setStatusHistory((prev:any)=>({...prev,[modal.id]:[inserted,...(prev[modal.id]||[])]}))
+      setStatuses((prev:any)=>({...prev,[modal.id]:{system_id:modal.id,status:form.status,reason:form.reason,notes:form.notes}}))
       showToast('Status updated')
       setModal(null)
       if(form.status==='out-of-service'||form.status==='maintenance'){
-        const newAlert = {type:form.status, property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:createdAt}
+        const newAlert = {type:form.status, property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:new Date().toISOString()}
         setAlertLog((prev:any)=>[newAlert,...prev])
         await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status, systemName:modal.name, propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', reason:form.reason})})
       }
     }
     setSaving(false)
-  }
-
-  const saveNote = async (systemId:string) => {
-    const draft = noteDrafts[systemId]
-    if(!draft || !draft.text.trim() || !draft.author.trim()) return
-    setSavingNote(systemId)
-    const createdAt = new Date().toISOString()
-    const {data, error} = await supabase.from('system_notes')
-      .insert({system_id:systemId, note:draft.text.trim(), author:draft.author.trim()})
-      .select()
-    if(error){ showToast('Error: '+error.message) }
-    else {
-      const inserted = (data&&data[0]) || {system_id:systemId, note:draft.text.trim(), author:draft.author.trim(), created_at:createdAt}
-      setSystemNotes((prev:any)=>({...prev,[systemId]:[inserted,...(prev[systemId]||[])]}))
-      setNoteDrafts((prev:any)=>({...prev,[systemId]:{text:'',author:draft.author}}))
-      showToast('Note added')
-      const sys = systems.find((s:any)=>s.id===systemId)
-      const newAlert = {type:'note-added', property_name:detailProp?.name||'', system_name:sys?.name||'', reason:draft.text.trim(), created_at:createdAt}
-      setAlertLog((prev:any)=>[newAlert,...prev])
-      await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'note-added', systemName:sys?.name||'', propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', noteAuthor:draft.author.trim(), noteText:draft.text.trim()})})
-    }
-    setSavingNote(null)
-  }
-
-  // ─── Vendors ──────────────────────────────────────────────────────────────────
-  const saveVendor = async (systemId:string) => {
-    const draft = vendorDrafts[systemId]
-    if(!draft || !draft.vendor_name.trim()) return
-    setSavingVendor(systemId)
-    const createdAt = new Date().toISOString()
-    const {data, error} = await supabase.from('system_vendors')
-      .insert({system_id:systemId, vendor_name:draft.vendor_name.trim(), phone:draft.phone||null, email:draft.email||null})
-      .select()
-    if(error){ showToast('Error: '+error.message) }
-    else {
-      const inserted = (data&&data[0]) || {system_id:systemId, vendor_name:draft.vendor_name.trim(), phone:draft.phone, email:draft.email, created_at:createdAt}
-      setSystemVendors((prev:any)=>({...prev,[systemId]:[...(prev[systemId]||[]),inserted]}))
-      setVendorDrafts((prev:any)=>({...prev,[systemId]:{vendor_name:'',phone:'',email:''}}))
-      showToast('Vendor added')
-    }
-    setSavingVendor(null)
-  }
-
-  const saveVendorEdit = async (vendorId:number, systemId:string) => {
-    const {error} = await supabase.from('system_vendors')
-      .update({vendor_name:vendorEditForm.vendor_name, phone:vendorEditForm.phone||null, email:vendorEditForm.email||null})
-      .eq('id',vendorId)
-    if(error){ showToast('Error: '+error.message); return }
-    setSystemVendors((prev:any)=>({...prev,[systemId]:(prev[systemId]||[]).map((v:any)=>v.id===vendorId?{...v,...vendorEditForm}:v)}))
-    setEditingVendor(null)
-    setVendorEditForm({})
-    showToast('Vendor updated')
-  }
-
-  // ─── Event costs (per status event, edits logged) ─────────────────────────────
-  const saveCost = async (statusEvent:any, systemId:string) => {
-    const draft = costDrafts[statusEvent.id]
-    if(!draft || !draft.editor.trim()){ showToast('Editor name required'); return }
-    setSavingCost(statusEvent.id)
-    const now = new Date().toISOString()
-    const existing = eventCosts[statusEvent.id]
-    const newCost = draft.estimated_cost===''?null:Number(draft.estimated_cost)
-    const newEta  = draft.estimated_completion||null
-
-    // Build a human-readable diff of what changed
-    const diffs:string[] = []
-    const oldCost = existing?.estimated_cost ?? null
-    const oldEta  = existing?.estimated_completion ?? null
-    if(String(oldCost??'')!==String(newCost??'')) diffs.push('Estimated Cost: '+(oldCost!=null?'$'+oldCost:'—')+' -> '+(newCost!=null?'$'+newCost:'—'))
-    if(String(oldEta??'')!==String(newEta??''))   diffs.push('Est. Completion: '+(oldEta||'—')+' -> '+(newEta||'—'))
-    const changeStr = diffs.length?diffs.join(' | '):'No field changes'
-
-    if(existing){
-      const {error} = await supabase.from('event_costs')
-        .update({estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now})
-        .eq('id',existing.id)
-      if(error){ showToast('Error: '+error.message); setSavingCost(null); return }
-      await supabase.from('event_cost_log').insert({event_cost_id:existing.id, edited_by:draft.editor.trim(), changes:changeStr})
-      const updated = {...existing, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now}
-      setEventCosts((prev:any)=>({...prev,[statusEvent.id]:updated}))
-      setCostLogs((prev:any)=>({...prev,[existing.id]:[{edited_by:draft.editor.trim(),changes:changeStr,created_at:now},...(prev[existing.id]||[])]}))
-    } else {
-      const {data, error} = await supabase.from('event_costs')
-        .insert({status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now})
-        .select()
-      if(error){ showToast('Error: '+error.message); setSavingCost(null); return }
-      const inserted = (data&&data[0]) || {id:Date.now(), status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now}
-      await supabase.from('event_cost_log').insert({event_cost_id:inserted.id, edited_by:draft.editor.trim(), changes:'Initial entry — '+changeStr})
-      setEventCosts((prev:any)=>({...prev,[statusEvent.id]:inserted}))
-      setCostLogs((prev:any)=>({...prev,[inserted.id]:[{edited_by:draft.editor.trim(),changes:'Initial entry — '+changeStr,created_at:now}]}))
-    }
-    showToast('Cost / ETA saved')
-    setSavingCost(null)
-  }
-
-  const uploadEventDoc = async (statusEvent:any, systemId:string, file:File) => {
-    setUploadingEventDoc(statusEvent.id)
-    const path = systemId+'/event-'+statusEvent.id+'/'+Date.now()+'-'+file.name
-    const {error:upErr} = await supabase.storage.from('documents').upload(path,file)
-    if(upErr){ showToast('Upload error: '+upErr.message); setUploadingEventDoc(null); return }
-    const {data, error:dbErr} = await supabase.from('event_documents')
-      .insert({status_update_id:statusEvent.id, system_id:systemId, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:'Staff'})
-      .select()
-    if(dbErr){ showToast('DB error: '+dbErr.message); setUploadingEventDoc(null); return }
-    const inserted = (data&&data[0]) || {status_update_id:statusEvent.id, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:'Staff', created_at:new Date().toISOString()}
-    setEventDocs((prev:any)=>({...prev,[statusEvent.id]:[inserted,...(prev[statusEvent.id]||[])]}))
-    showToast('File uploaded')
-    setUploadingEventDoc(null)
   }
 
   const savePsr = async () => {
@@ -353,17 +240,60 @@ export default function Home() {
   const saveEditPsr = async () => {
     if(!editingPsr) return
     setSavingEdit(true)
-    const updateData = {...editPsrForm, edited_by:editedBy||'Staff', edited_at:new Date().toISOString(), edit_notes:editNotes||null}
+
+    // 1. Auto-detect what changed between the original report and the edited form
+    const diffArr = buildPsrDiff(editingPsr, editPsrForm)
+    const changeSummary = diffArr.length ? diffArr.join(' | ') : 'No field changes'
+
+    // 2. Save a full snapshot of the report AS IT WAS before this edit
+    const {error:verErr} = await supabase.from('psr_report_versions').insert({
+      psr_report_id: editingPsr.id,
+      property_id:   editingPsr.property_id,
+      snapshot:      editingPsr,
+      change_summary: changeSummary,
+      edit_note:     editNotes||null,
+      edited_by:     editedBy||'Staff',
+      edited_at:     new Date().toISOString(),
+    })
+    if(verErr){ showToast('Version save error: '+verErr.message); setSavingEdit(false); return }
+
+    // 3. Update the live report. We keep edit_notes as a combined human-readable record.
+    const combinedNote = changeSummary + (editNotes ? ' || Note: '+editNotes : '')
+    const updateData = {...editPsrForm, edited_by:editedBy||'Staff', edited_at:new Date().toISOString(), edit_notes:combinedNote}
     const {error} = await supabase.from('psr_reports').update(updateData).eq('id',editingPsr.id)
-    if(error) showToast('Error: '+error.message)
-    else {
-      showToast('PSR report updated')
-      setAllPsrReports((prev:any)=>prev.map((r:any)=>r.id===editingPsr.id?{...r,...updateData}:r))
-      setEditingPsr(null)
-      setEditPsrForm({})
-      setPsrMode('history')
-    }
+    if(error){ showToast('Error: '+error.message); setSavingEdit(false); return }
+
+    showToast('PSR report updated')
+    setAllPsrReports((prev:any)=>prev.map((r:any)=>r.id===editingPsr.id?{...r,...updateData}:r))
+
+    // 4. Notify all subscribers about the edit
+    const newAlert = {type:'psr-edited', property_name:detailProp?.name||'', report_date:editingPsr.report_date, reason:changeSummary, created_at:new Date().toISOString()}
+    setAlertLog((prev:any)=>[newAlert,...prev])
+    await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      type:'psr-edited',
+      propertyName: detailProp?.name||'',
+      propertyId:   detailProp?.id||'',
+      reportDate:   editingPsr.report_date,
+      editedBy:     editedBy||'Staff',
+      changeSummary,
+    })})
+
+    setEditingPsr(null)
+    setEditPsrForm({})
+    setPsrMode('history')
     setSavingEdit(false)
+  }
+
+  // Load prior versions for a given report
+  const openVersions = async (report:any) => {
+    setVersionsFor(report)
+    setVersionList([])
+    setExpandedVersion(null)
+    setLoadingVersions(true)
+    const {data, error} = await supabase.from('psr_report_versions').select('*').eq('psr_report_id', report.id).order('edited_at',{ascending:false})
+    if(error) showToast('Error loading versions: '+error.message)
+    else setVersionList(data||[])
+    setLoadingVersions(false)
   }
 
   const saveSysInfo = async (systemId:string) => {
@@ -378,17 +308,21 @@ export default function Home() {
     setSavingSysInfo(false)
   }
 
-  const uploadDocument = async (file:File) => {
+  // bucketKey is the system id, or 'property' for property-wide docs
+  const uploadDocument = async (file:File, bucketKey:string) => {
     if(!detailProp) return
-    setUploading(true)
-    const path = detailProp.id+'/'+Date.now()+'-'+file.name
+    const docType = pendingType[bucketKey] || 'General'
+    const systemId = bucketKey==='property' ? null : bucketKey
+    setUploading(bucketKey)
+    const path = detailProp.id+'/'+bucketKey+'/'+Date.now()+'-'+file.name
     const {error:upErr} = await supabase.storage.from('documents').upload(path,file)
-    if(upErr){ showToast('Upload error: '+upErr.message); setUploading(false); return }
-    const {error:dbErr} = await supabase.from('documents').insert({property_id:detailProp.id, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:'Staff'})
-    if(dbErr){ showToast('DB error: '+dbErr.message); setUploading(false); return }
+    if(upErr){ showToast('Upload error: '+upErr.message); setUploading(null); return }
+    const row = {property_id:detailProp.id, system_id:systemId, doc_type:docType, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:'Staff'}
+    const {error:dbErr} = await supabase.from('documents').insert(row)
+    if(dbErr){ showToast('DB error: '+dbErr.message); setUploading(null); return }
     showToast('Document uploaded')
-    setDocuments((prev:any)=>[...prev,{property_id:detailProp.id,file_name:file.name,file_path:path,file_size:file.size,uploaded_by:'Staff',created_at:new Date().toISOString()}])
-    setUploading(false)
+    setDocuments((prev:any)=>[...prev,{...row,created_at:new Date().toISOString()}])
+    setUploading(null)
   }
 
   const viewDocument = async (path:string) => {
@@ -396,11 +330,11 @@ export default function Home() {
     if(data?.signedUrl) window.open(data.signedUrl,'_blank')
   }
 
-  const handleDrop = (e:React.DragEvent) => {
+  const handleDrop = (e:React.DragEvent, bucketKey:string) => {
     e.preventDefault()
-    setDragOver(false)
+    setDragOver(null)
     const file = e.dataTransfer.files?.[0]
-    if(file) uploadDocument(file)
+    if(file) uploadDocument(file, bucketKey)
   }
 
   // ─── Derived state ────────────────────────────────────────────────────────────
@@ -427,6 +361,71 @@ export default function Home() {
   if(loading) return <div style={{padding:'40px',textAlign:'center'}}>Loading...</div>
   if(error)   return <div style={{padding:'40px',color:'red'}}>Error: {error}</div>
 
+  // ─── A single document upload bucket (reused per system + property-wide) ───────
+  const renderDocBucket = (bucketKey:string, title:string, subtitle:string) => {
+    const docsInBucket = propDocuments
+      .filter((d:any)=> bucketKey==='property' ? (d.system_id===null||d.system_id===undefined) : d.system_id===bucketKey)
+      .filter((d:any)=> docFilter==='all' || (d.doc_type||'General')===docFilter)
+    const chosenType = pendingType[bucketKey] || ''
+    const isOver = dragOver===bucketKey
+    const isUp   = uploading===bucketKey
+    return (
+      <div key={bucketKey} style={{marginBottom:'18px',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'12px',background:'#fff'}}>
+        <div style={{marginBottom:'10px'}}>
+          <div style={{fontWeight:'700',fontSize:'13px',color:'#1e293b'}}>{title}</div>
+          {subtitle && <div style={{fontSize:'10px',color:'#94a3b8'}}>{subtitle}</div>}
+        </div>
+
+        {/* Required document type selector */}
+        <div style={{marginBottom:'8px'}}>
+          <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'4px'}}>Document Type (required before upload)</div>
+          <select value={chosenType} onChange={e=>setPendingType((p:any)=>({...p,[bucketKey]:e.target.value}))} style={{width:'100%',padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px'}}>
+            <option value=''>Select type...</option>
+            {DOC_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+
+        {/* Upload zone — disabled until a type is chosen */}
+        <div
+          onDragOver={e=>{ if(chosenType){ e.preventDefault(); setDragOver(bucketKey) } }}
+          onDragLeave={()=>setDragOver(null)}
+          onDrop={e=> chosenType ? handleDrop(e,bucketKey) : e.preventDefault()}
+          onClick={()=>{ if(!chosenType){ showToast('Please choose a document type first'); return } fileInputRefs.current[bucketKey]?.click() }}
+          style={{border:'2px dashed '+(isOver?'#3b82f6':'#e2e8f0'),borderRadius:'8px',padding:'16px',textAlign:'center',cursor:chosenType?'pointer':'not-allowed',marginBottom:'10px',background:isOver?'#eff6ff':(chosenType?'#fafafa':'#f1f5f9'),opacity:chosenType?1:0.6}}
+        >
+          <div style={{fontSize:'20px',marginBottom:'4px'}}>📎</div>
+          <div style={{fontSize:'11px',color:'#64748b'}}>{isUp?'Uploading...':(chosenType?'Drop file here or tap to browse':'Choose a type above to enable upload')}</div>
+          <input ref={el=>{ fileInputRefs.current[bucketKey]=el }} type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadDocument(f,bucketKey); e.target.value=''}}/>
+        </div>
+
+        {/* Files in this bucket */}
+        {docsInBucket.length===0
+          ? <div style={{fontSize:'11px',color:'#94a3b8',textAlign:'center',padding:'6px'}}>No documents{docFilter!=='all'?' of this type':''}.</div>
+          : docsInBucket.map((doc:any,i:number)=>{
+              const icon = getIcon(doc.file_name)
+              const iconColors:Record<string,{bg:string,color:string}> = {PDF:{bg:'#fef2f2',color:'#dc2626'},XLS:{bg:'#f0fdf4',color:'#16a34a'},IMG:{bg:'#eff6ff',color:'#2563eb'},DOC:{bg:'#f5f3ff',color:'#7c3aed'},CSV:{bg:'#fff7ed',color:'#ea580c'},FILE:{bg:'#f8fafc',color:'#64748b'}}
+              const ic = iconColors[icon]||iconColors.FILE
+              const dt = doc.doc_type||'General'
+              const dtc = DOC_TYPE_COLORS[dt]||DOC_TYPE_COLORS.General
+              return (
+                <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',padding:'8px',background:'#fafafa',borderRadius:'8px',border:'1px solid #e2e8f0',marginBottom:'6px'}}>
+                  <div style={{width:'34px',height:'34px',borderRadius:'6px',background:ic.bg,color:ic.color,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'10px',fontWeight:'700',flexShrink:0}}>{icon}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:'12px',fontWeight:'600',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{doc.file_name}</div>
+                    <div style={{display:'flex',alignItems:'center',gap:'6px',marginTop:'2px'}}>
+                      <span style={{fontSize:'9px',fontWeight:'700',padding:'1px 6px',borderRadius:'8px',background:dtc.bg,color:dtc.color}}>{dt}</span>
+                      <span style={{fontSize:'10px',color:'#94a3b8'}}>{doc.uploaded_by} · {doc.created_at?new Date(doc.created_at).toLocaleDateString():''}</span>
+                    </div>
+                  </div>
+                  <button onClick={()=>viewDocument(doc.file_path)} style={{padding:'5px 10px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer',flexShrink:0}}>View</button>
+                </div>
+              )
+            })
+        }
+      </div>
+    )
+  }
+
   // ─── Detail panel content (shared desktop + mobile) ───────────────────────────
   const renderDetailContent = () => (
     <>
@@ -439,10 +438,6 @@ export default function Home() {
                 const st = statuses[sys.id]
                 const statusKey = st?.status||'in-service'
                 const meta = STATUS_META[statusKey]
-                const history = statusHistory[sys.id]||[]
-                const notes   = systemNotes[sys.id]||[]
-                const historyOpen = !!expandedHistory[sys.id]
-                const draft = noteDrafts[sys.id]||{text:'',author:''}
                 return (
                   <div key={sys.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',marginBottom:'10px',background:'#fafafa'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'6px'}}>
@@ -455,195 +450,6 @@ export default function Home() {
                     {st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
                     {st?.notes  && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
                     <button onClick={()=>openModal(sys)} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>Update Status</button>
-
-                    {/* ── Status history (traceability) ── */}
-                    <div style={{marginTop:'10px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
-                      <div
-                        onClick={()=>setExpandedHistory(prev=>({...prev,[sys.id]:!historyOpen}))}
-                        style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}
-                      >
-                        <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Status History {history.length>0?'('+history.length+')':''}</span>
-                        <span style={{fontSize:'11px',color:'#94a3b8'}}>{historyOpen?'▲':'▼'}</span>
-                      </div>
-                      {historyOpen && (
-                        <div style={{marginTop:'8px'}}>
-                          {history.length===0
-                            ? <div style={{fontSize:'11px',color:'#94a3b8'}}>No status changes recorded.</div>
-                            : history.map((h:any,i:number)=>{
-                                const hm = STATUS_META[h.status]||STATUS_META['in-service']
-                                return (
-                                  <div key={h.id||i} style={{borderLeft:'2px solid '+hm.border,paddingLeft:'10px',marginBottom:'8px'}}>
-                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'2px'}}>
-                                      <span style={{background:hm.bg,color:hm.color,border:'1px solid '+hm.border,padding:'1px 7px',borderRadius:'10px',fontSize:'10px',fontWeight:'600'}}>{hm.label}</span>
-                                      <span style={{fontSize:'10px',color:'#94a3b8'}}>{fmtDateTime(h.created_at)}</span>
-                                    </div>
-                                    {h.reason && <div style={{fontSize:'10px',color:'#dc2626'}}>{h.reason}</div>}
-                                    {h.notes  && <div style={{fontSize:'10px',color:'#64748b',fontStyle:'italic'}}>{h.notes}</div>}
-                                    <div style={{fontSize:'10px',color:'#94a3b8',marginTop:'1px'}}>by {h.reported_by||'Staff'}</div>
-
-                                    {/* Cost / ETA / files — only meaningful for non-in-service events with a saved id */}
-                                    {h.id && h.status!=='in-service' && (()=>{
-                                      const cost = eventCosts[h.id]
-                                      const logs = cost?costLogs[cost.id]||[]:[]
-                                      const edocs = eventDocs[h.id]||[]
-                                      const costOpen = !!expandedCosts[h.id]
-                                      const cd = costDrafts[h.id]||{estimated_cost:cost?.estimated_cost??'',estimated_completion:cost?.estimated_completion??'',editor:''}
-                                      return (
-                                        <div style={{marginTop:'6px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px'}}>
-                                          <div onClick={()=>setExpandedCosts(prev=>({...prev,[h.id]:!costOpen}))} style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}>
-                                            <span style={{fontSize:'10px',fontWeight:'700',color:'#475569'}}>
-                                              Cost / ETA / Files
-                                              {cost?.estimated_cost!=null && <span style={{marginLeft:'6px',color:'#0f766e'}}>${cost.estimated_cost}</span>}
-                                              {cost?.estimated_completion && <span style={{marginLeft:'6px',color:'#64748b'}}>ETA {cost.estimated_completion}</span>}
-                                            </span>
-                                            <span style={{fontSize:'10px',color:'#94a3b8'}}>{costOpen?'▲':'▼'}</span>
-                                          </div>
-                                          {costOpen && (
-                                            <div style={{marginTop:'8px'}}>
-                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Cost ($)</div>
-                                              <input value={cd.estimated_cost} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_cost:e.target.value}}))} placeholder='0.00' inputMode='decimal' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Completion Date</div>
-                                              <input type='date' value={cd.estimated_completion} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_completion:e.target.value}}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Your Name (required to save)</div>
-                                              <input value={cd.editor} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,editor:e.target.value}}))} placeholder='Editor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                              <button onClick={()=>saveCost(h,sys.id)} disabled={savingCost===h.id||!cd.editor.trim()} style={{width:'100%',padding:'6px',background:!cd.editor.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!cd.editor.trim()?'default':'pointer',marginBottom:'6px'}}>
-                                                {savingCost===h.id?'Saving...':(cost?'Update Cost / ETA':'Save Cost / ETA')}
-                                              </button>
-
-                                              {/* Files for this event */}
-                                              <label style={{display:'block',width:'100%',padding:'6px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
-                                                {uploadingEventDoc===h.id?'Uploading...':'+ Add Invoice / Quote'}
-                                                <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadEventDoc(h,sys.id,f)}}/>
-                                              </label>
-                                              {edocs.map((d:any,di:number)=>(
-                                                <div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 6px',background:'#f8fafc',borderRadius:'5px',marginBottom:'4px'}}>
-                                                  <span style={{fontSize:'10px',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'150px'}}>{d.file_name}</span>
-                                                  <button onClick={()=>viewDocument(d.file_path)} style={{padding:'2px 8px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>View</button>
-                                                </div>
-                                              ))}
-
-                                              {/* Edit log */}
-                                              {logs.length>0 && (
-                                                <div style={{marginTop:'6px',borderTop:'1px solid #f1f5f9',paddingTop:'6px'}}>
-                                                  <div style={{fontSize:'9px',fontWeight:'700',color:'#94a3b8',marginBottom:'3px'}}>Edit History</div>
-                                                  {logs.map((l:any,li:number)=>(
-                                                    <div key={li} style={{fontSize:'9px',color:'#64748b',marginBottom:'2px'}}>
-                                                      <span style={{fontWeight:'600',color:'#334155'}}>{l.edited_by}</span> · {fmtDateTime(l.created_at)}<br/>
-                                                      <span style={{color:'#92400e'}}>{l.changes}</span>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              )}
-                                            </div>
-                                          )}
-                                        </div>
-                                      )
-                                    })()}
-                                  </div>
-                                )
-                              })
-                          }
-                        </div>
-                      )}
-                    </div>
-
-                    {/* ── Vendor information (collapsible, multiple, editable) ── */}
-                    <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
-                      <div
-                        onClick={()=>setExpandedVendors(prev=>({...prev,[sys.id]:!expandedVendors[sys.id]}))}
-                        style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}
-                      >
-                        <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Vendor Information {(systemVendors[sys.id]||[]).length>0?'('+(systemVendors[sys.id]||[]).length+')':''}</span>
-                        <span style={{fontSize:'11px',color:'#94a3b8'}}>{expandedVendors[sys.id]?'▲':'▼'}</span>
-                      </div>
-                      {expandedVendors[sys.id] && (()=>{
-                        const vendors = systemVendors[sys.id]||[]
-                        const vd = vendorDrafts[sys.id]||{vendor_name:'',phone:'',email:''}
-                        return (
-                          <div style={{marginTop:'8px'}}>
-                            {vendors.map((v:any,vi:number)=>(
-                              <div key={v.id||vi} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px',marginBottom:'6px'}}>
-                                {editingVendor===v.id ? (
-                                  <div>
-                                    <input value={vendorEditForm.vendor_name||''} onChange={e=>setVendorEditForm((p:any)=>({...p,vendor_name:e.target.value}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                    <input value={vendorEditForm.phone||''} onChange={e=>setVendorEditForm((p:any)=>({...p,phone:e.target.value}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                    <input value={vendorEditForm.email||''} onChange={e=>setVendorEditForm((p:any)=>({...p,email:e.target.value}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                    <div style={{display:'flex',gap:'4px'}}>
-                                      <button onClick={()=>{setEditingVendor(null);setVendorEditForm({})}} style={{flex:1,padding:'5px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>
-                                      <button onClick={()=>saveVendorEdit(v.id,sys.id)} style={{flex:1,padding:'5px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Save</button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div>
-                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-                                      <span style={{fontSize:'11px',fontWeight:'600',color:'#1e293b'}}>{v.vendor_name}</span>
-                                      <button onClick={()=>{setEditingVendor(v.id);setVendorEditForm({vendor_name:v.vendor_name,phone:v.phone,email:v.email})}} style={{padding:'1px 6px',background:'#f1f5f9',color:'#475569',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>Edit</button>
-                                    </div>
-                                    {v.phone && <div style={{fontSize:'10px',color:'#64748b'}}>{v.phone}</div>}
-                                    {v.email && <div style={{fontSize:'10px',color:'#2563eb'}}>{v.email}</div>}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                            <div style={{background:'#f8fafc',borderRadius:'6px',padding:'8px'}}>
-                              <input value={vd.vendor_name} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,vendor_name:e.target.value}}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                              <input value={vd.phone} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,phone:e.target.value}}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                              <input value={vd.email} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,email:e.target.value}}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                              <button onClick={()=>saveVendor(sys.id)} disabled={savingVendor===sys.id||!vd.vendor_name.trim()} style={{width:'100%',padding:'6px',background:!vd.vendor_name.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!vd.vendor_name.trim()?'default':'pointer'}}>
-                                {savingVendor===sys.id?'Adding...':'+ Add Vendor'}
-                              </button>
-                            </div>
-                          </div>
-                        )
-                      })()}
-                    </div>
-
-                    {/* ── System notes (append-only) ── */}
-                    <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
-                      <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'6px'}}>Notes {notes.length>0?'('+notes.length+')':''}</div>
-                      <input
-                        value={draft.author}
-                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,author:e.target.value}}))}
-                        placeholder='Your name'
-                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}
-                      />
-                      <textarea
-                        value={draft.text}
-                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,text:e.target.value}}))}
-                        placeholder='Add a note...'
-                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',minHeight:'48px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'5px'}}
-                      />
-                      <button
-                        onClick={()=>saveNote(sys.id)}
-                        disabled={savingNote===sys.id||!draft.text.trim()||!draft.author.trim()}
-                        style={{width:'100%',padding:'6px',background:(!draft.text.trim()||!draft.author.trim())?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:(!draft.text.trim()||!draft.author.trim())?'default':'pointer'}}
-                      >
-                        {savingNote===sys.id?'Adding...':'Add Note'}
-                      </button>
-                      <div style={{marginTop:'8px'}}>
-                        {notes.length===0
-                          ? <div style={{fontSize:'11px',color:'#94a3b8'}}>No notes yet.</div>
-                          : notes.map((n:any,i:number)=>{
-                              const isLatest = i===0
-                              return (
-                                <div key={n.id||i} style={{
-                                  background:isLatest?'#fffbeb':'#fff',
-                                  border:'1px solid '+(isLatest?'#fde68a':'#e2e8f0'),
-                                  borderRadius:'6px',padding:'8px',marginBottom:'6px'
-                                }}>
-                                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'3px'}}>
-                                    <span style={{fontSize:'10px',fontWeight:'700',color:'#334155'}}>
-                                      {n.author||'Staff'}{isLatest && <span style={{marginLeft:'6px',background:'#fde68a',color:'#92400e',padding:'0 6px',borderRadius:'8px',fontSize:'9px'}}>Latest</span>}
-                                    </span>
-                                    <span style={{fontSize:'9px',color:'#94a3b8'}}>{fmtDateTime(n.created_at)}</span>
-                                  </div>
-                                  <div style={{fontSize:'11px',color:'#1e293b',whiteSpace:'pre-wrap'}}>{n.note}</div>
-                                </div>
-                              )
-                            })
-                        }
-                      </div>
-                    </div>
                   </div>
                 )
               })
@@ -692,8 +498,16 @@ export default function Home() {
                               <span style={{color:'#1e293b',fontWeight:'600'}}>{String(r[field])}</span>
                             </div>
                           ))}
-                          {r.edit_notes && <div style={{marginTop:'6px',padding:'6px',background:'#fef9c3',borderRadius:'5px',fontSize:'10px',color:'#92400e'}}>Edit: {r.edit_notes}</div>}
-                          <button onClick={()=>openEditPsr(r)} style={{marginTop:'8px',width:'100%',padding:'6px',background:'#f1f5f9',color:'#334155',border:'1px solid #e2e8f0',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Edit This Report</button>
+                          {r.edited_at && (
+                            <div style={{marginTop:'6px',padding:'6px',background:'#eff6ff',borderRadius:'5px',fontSize:'10px',color:'#1e40af'}}>
+                              Last edited {r.edited_at.split('T')[0]} by {r.edited_by||'Staff'}
+                            </div>
+                          )}
+                          {r.edit_notes && <div style={{marginTop:'6px',padding:'6px',background:'#fef9c3',borderRadius:'5px',fontSize:'10px',color:'#92400e'}}>Changes: {r.edit_notes}</div>}
+                          <div style={{display:'flex',gap:'6px',marginTop:'8px'}}>
+                            <button onClick={()=>openEditPsr(r)} style={{flex:1,padding:'6px',background:'#f1f5f9',color:'#334155',border:'1px solid #e2e8f0',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Edit This Report</button>
+                            <button onClick={()=>openVersions(r)} style={{flex:1,padding:'6px',background:'#eff6ff',color:'#2563eb',border:'1px solid #bfdbfe',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>See Prior Versions</button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -891,6 +705,13 @@ export default function Home() {
                 <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Edited By (required)</div>
                 <input value={editedBy} onChange={e=>setEditedBy(e.target.value)} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',boxSizing:'border-box' as any}}/>
               </div>
+              <div style={{marginBottom:'10px'}}>
+                <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Note about this edit (optional)</div>
+                <textarea value={editNotes} onChange={e=>setEditNotes(e.target.value)} placeholder='e.g. Corrected pool status after re-inspection' style={{width:'100%',padding:'6px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',minHeight:'52px',resize:'vertical' as any,boxSizing:'border-box' as any}}/>
+              </div>
+              <div style={{padding:'8px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'6px',fontSize:'10px',color:'#166534',marginBottom:'8px'}}>
+                A snapshot of the current report will be saved to version history before your changes are applied.
+              </div>
               <button onClick={saveEditPsr} disabled={savingEdit||!editedBy.trim()} style={{width:'100%',padding:'10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
                 {savingEdit?'Saving...':'Save Changes'}
               </button>
@@ -927,38 +748,26 @@ export default function Home() {
         </div>
       )}
 
-      {/* Documents tab */}
+      {/* Documents tab — per-system buckets + property-wide, with type filter */}
       {detailTab==='documents' && (
         <div>
-          <div
-            onDragOver={e=>{e.preventDefault();setDragOver(true)}}
-            onDragLeave={()=>setDragOver(false)}
-            onDrop={handleDrop}
-            onClick={()=>fileInputRef.current?.click()}
-            style={{border:'2px dashed '+(dragOver?'#3b82f6':'#e2e8f0'),borderRadius:'8px',padding:'20px',textAlign:'center',cursor:'pointer',marginBottom:'14px',background:dragOver?'#eff6ff':'#fafafa'}}
-          >
-            <div style={{fontSize:'24px',marginBottom:'6px'}}>📎</div>
-            <div style={{fontSize:'12px',color:'#64748b'}}>{uploading?'Uploading...':'Drop files here or tap to browse'}</div>
-            <input ref={fileInputRef} type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadDocument(f)}}/>
+          {/* Filter by document type */}
+          <div style={{marginBottom:'14px'}}>
+            <div style={{fontSize:'11px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Filter by type</div>
+            <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
+              {['all',...DOC_TYPES].map(t=>(
+                <button key={t} onClick={()=>setDocFilter(t)} style={{padding:'4px 10px',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer',border:docFilter===t?'1.5px solid #3b82f6':'1px solid #e2e8f0',background:docFilter===t?'#eff6ff':'#fff',color:docFilter===t?'#1d4ed8':'#64748b'}}>
+                  {t==='all'?'All':t}
+                </button>
+              ))}
+            </div>
           </div>
-          {propDocuments.length===0
-            ? <div style={{fontSize:'12px',color:'#94a3b8',textAlign:'center',padding:'10px'}}>No documents uploaded.</div>
-            : propDocuments.map((doc:any,i:number)=>{
-                const icon = getIcon(doc.file_name)
-                const iconColors:Record<string,{bg:string,color:string}> = {PDF:{bg:'#fef2f2',color:'#dc2626'},XLS:{bg:'#f0fdf4',color:'#16a34a'},IMG:{bg:'#eff6ff',color:'#2563eb'},DOC:{bg:'#f5f3ff',color:'#7c3aed'},CSV:{bg:'#fff7ed',color:'#ea580c'},FILE:{bg:'#f8fafc',color:'#64748b'}}
-                const ic = iconColors[icon]||iconColors.FILE
-                return (
-                  <div key={i} style={{display:'flex',alignItems:'center',gap:'10px',padding:'10px',background:'#fff',borderRadius:'8px',border:'1px solid #e2e8f0',marginBottom:'8px'}}>
-                    <div style={{width:'36px',height:'36px',borderRadius:'6px',background:ic.bg,color:ic.color,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'10px',fontWeight:'700',flexShrink:0}}>{icon}</div>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:'12px',fontWeight:'600',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{doc.file_name}</div>
-                      <div style={{fontSize:'10px',color:'#94a3b8'}}>{doc.uploaded_by} · {doc.created_at?new Date(doc.created_at).toLocaleDateString():''}</div>
-                    </div>
-                    <button onClick={()=>viewDocument(doc.file_path)} style={{padding:'5px 10px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer',flexShrink:0}}>View</button>
-                  </div>
-                )
-              })
-          }
+
+          {/* One bucket per system */}
+          {propSystems.map((sys:any)=> renderDocBucket(sys.id, sys.name, sys.system_type ? sys.system_type.charAt(0).toUpperCase()+sys.system_type.slice(1) : ''))}
+
+          {/* Property-wide bucket */}
+          {renderDocBucket('property','Property-Wide Documents','Not tied to a specific system')}
         </div>
       )}
     </>
@@ -975,10 +784,10 @@ export default function Home() {
             const isOut   = a.type==='out-of-service'
             const isMaint = a.type==='maintenance'
             const isPsr   = a.type==='psr-submitted'
-            const isNote  = a.type==='note-added'
-            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':'#0369a1'
-            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':'#eff6ff'
-            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':'PSR Submitted'
+            const isEdit  = a.type==='psr-edited'
+            const color  = isOut?'#dc2626':isMaint?'#d97706':isEdit?'#7c3aed':'#0369a1'
+            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isEdit?'#f5f3ff':'#eff6ff'
+            const label  = isOut?'Out of Service':isMaint?'Maintenance':isEdit?'PSR Edited':'PSR Submitted'
             const dateStr = a.created_at
               ? new Date(a.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
               : ''
@@ -990,7 +799,8 @@ export default function Home() {
                 </div>
                 <div style={{fontWeight:'600',fontSize:'13px',color:'#1e293b',marginBottom:'2px'}}>{a.property_name||'—'}</div>
                 {a.system_name && <div style={{fontSize:'12px',color:'#64748b'}}>{a.system_name}{a.reason?': '+a.reason:''}</div>}
-                {isPsr && a.report_date && <div style={{fontSize:'12px',color:'#64748b'}}>Report date: {a.report_date}</div>}
+                {isEdit && a.reason && <div style={{fontSize:'12px',color:'#64748b'}}>{a.reason}</div>}
+                {(isPsr||isEdit) && a.report_date && <div style={{fontSize:'12px',color:'#64748b'}}>Report date: {a.report_date}</div>}
               </div>
             )
           })
@@ -1231,6 +1041,54 @@ export default function Home() {
             <div style={{display:'flex',gap:'10px'}}>
               <button onClick={()=>setModal(null)} style={{flex:1,padding:'10px',background:'#f1f5f9',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer',color:'#64748b'}}>Cancel</button>
               <button onClick={saveStatus} disabled={saving} style={{flex:2,padding:'10px',background:'#3b82f6',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer',color:'#fff'}}>{saving?'Saving...':'Save Status'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Prior Versions modal ── */}
+      {versionsFor && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:300,padding:'16px'}}>
+          <div style={{background:'#fff',borderRadius:'12px',padding:'20px',width:'100%',maxWidth:'460px',maxHeight:'80vh',display:'flex',flexDirection:'column'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'4px'}}>
+              <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>Prior Versions</div>
+              <button onClick={()=>{setVersionsFor(null);setVersionList([]);setExpandedVersion(null)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:'20px',color:'#94a3b8'}}>×</button>
+            </div>
+            <div style={{fontSize:'12px',color:'#64748b',marginBottom:'14px'}}>Report dated {versionsFor.report_date}</div>
+            <div style={{overflowY:'auto',flex:1}}>
+              {loadingVersions
+                ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'13px',padding:'30px 0'}}>Loading versions...</div>
+                : versionList.length===0
+                  ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'13px',padding:'30px 0'}}>No prior versions yet. Versions are saved each time this report is edited from now on.</div>
+                  : versionList.map((v:any)=>{
+                      const snap = v.snapshot||{}
+                      const isOpen = expandedVersion===v.id
+                      return (
+                        <div key={v.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',marginBottom:'8px',overflow:'hidden'}}>
+                          <div onClick={()=>setExpandedVersion(isOpen?null:v.id)} style={{padding:'10px 12px',cursor:'pointer',background:'#f8fafc'}}>
+                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                              <div style={{fontWeight:'600',fontSize:'12px',color:'#1e293b'}}>Edited by {v.edited_by||'Staff'}</div>
+                              <span style={{fontSize:'12px',color:'#94a3b8'}}>{isOpen?'▲':'▼'}</span>
+                            </div>
+                            <div style={{fontSize:'10px',color:'#94a3b8',marginTop:'2px'}}>{v.edited_at?new Date(v.edited_at).toLocaleString():''}</div>
+                            {v.change_summary && <div style={{fontSize:'10px',color:'#92400e',marginTop:'4px'}}>Changed: {v.change_summary}</div>}
+                            {v.edit_note && <div style={{fontSize:'10px',color:'#1e40af',marginTop:'2px'}}>Note: {v.edit_note}</div>}
+                          </div>
+                          {isOpen && (
+                            <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0'}}>
+                              <div style={{fontSize:'10px',color:'#64748b',marginBottom:'6px',fontStyle:'italic'}}>Snapshot of the report before this edit:</div>
+                              {Object.keys(snap).filter(k=>!PSR_IGNORE_FIELDS.includes(k) && snap[k]!=null && snap[k]!=='').map((k:string)=>(
+                                <div key={k} style={{display:'flex',justifyContent:'space-between',fontSize:'11px',marginBottom:'3px',gap:'8px'}}>
+                                  <span style={{color:'#64748b'}}>{PSR_FIELD_LABELS[k]||k}</span>
+                                  <span style={{color:'#1e293b',fontWeight:'600',textAlign:'right'}}>{String(snap[k])}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })
+              }
             </div>
           </div>
         </div>
