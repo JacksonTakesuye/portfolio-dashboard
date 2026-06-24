@@ -41,10 +41,16 @@ const SEC = (title:string, children:any) => (
 const FILE_ICON: Record<string,string> = {pdf:'PDF',xlsx:'XLS',xls:'XLS',jpg:'IMG',jpeg:'IMG',png:'IMG',doc:'DOC',docx:'DOC',csv:'CSV'}
 const getIcon = (name:string) => { const ext = name.split('.').pop()?.toLowerCase()||''; return FILE_ICON[ext]||'FILE' }
 
+const fmtDateTime = (ts:string) => ts
+  ? new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
+  : ''
+
 export default function Home() {
   const [properties,    setProperties]    = useState<any[]>([])
   const [systems,       setSystems]        = useState<any[]>([])
   const [statuses,      setStatuses]       = useState<Record<string,any>>({})
+  const [statusHistory, setStatusHistory]  = useState<Record<string,any[]>>({})
+  const [systemNotes,   setSystemNotes]     = useState<Record<string,any[]>>({})
   const [systemInfos,   setSystemInfos]    = useState<Record<string,any>>({})
   const [allPsrReports, setAllPsrReports]  = useState<any[]>([])
   const [documents,     setDocuments]      = useState<any[]>([])
@@ -62,6 +68,9 @@ export default function Home() {
   const [psrSearch,     setPsrSearch]      = useState('')
   const [psrSort,       setPsrSort]        = useState<'newest'|'oldest'>('newest')
   const [expandedPsr,   setExpandedPsr]    = useState<number|null>(null)
+  const [expandedHistory, setExpandedHistory] = useState<Record<string,boolean>>({})
+  const [noteDrafts,    setNoteDrafts]     = useState<Record<string,{text:string,author:string}>>({})
+  const [savingNote,    setSavingNote]     = useState<string|null>(null)
   const [tab,           setTab]            = useState('all')
   const [stateFilter,   setStateFilter]    = useState('all')
   const [modal,         setModal]          = useState<any>(null)
@@ -92,6 +101,7 @@ export default function Home() {
       const {data:props,  error:e1} = await supabase.from('properties').select('*')
       const {data:sys,    error:e2} = await supabase.from('systems').select('*')
       const {data:statUpd}          = await supabase.from('status_updates').select('*').order('created_at',{ascending:false})
+      const {data:notes}            = await supabase.from('system_notes').select('*').order('created_at',{ascending:false})
       const {data:sysInfo}          = await supabase.from('system_info').select('*')
       const {data:psr}              = await supabase.from('psr_reports').select('*').order('report_date',{ascending:false})
       const {data:docs}             = await supabase.from('documents').select('*').order('created_at',{ascending:false})
@@ -101,9 +111,19 @@ export default function Home() {
       else {
         setProperties(props||[])
         setSystems(sys||[])
+        // Latest status per system (for badges) + full history per system (for traceability)
         const ls:Record<string,any>={}
-        ;(statUpd||[]).forEach((s:any)=>{ if(!ls[s.system_id]) ls[s.system_id]=s })
+        const hist:Record<string,any[]>={}
+        ;(statUpd||[]).forEach((s:any)=>{
+          if(!ls[s.system_id]) ls[s.system_id]=s
+          ;(hist[s.system_id] = hist[s.system_id]||[]).push(s)
+        })
         setStatuses(ls)
+        setStatusHistory(hist)
+        // Notes grouped by system, newest first
+        const nm:Record<string,any[]>={}
+        ;(notes||[]).forEach((n:any)=>{ (nm[n.system_id] = nm[n.system_id]||[]).push(n) })
+        setSystemNotes(nm)
         const im:Record<string,any>={}
         ;(sysInfo||[]).forEach((s:any)=>{ im[s.system_id]=s })
         setSystemInfos(im)
@@ -143,19 +163,43 @@ export default function Home() {
   const saveStatus = async () => {
     if(!modal) return
     setSaving(true)
-    const {error} = await supabase.from('status_updates').insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:form.reportedBy||'Staff'})
+    const createdAt = new Date().toISOString()
+    const {data, error} = await supabase.from('status_updates')
+      .insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:form.reportedBy||'Staff'})
+      .select()
     if(error){ showToast('Error: '+error.message) }
     else {
-      setStatuses((prev:any)=>({...prev,[modal.id]:{system_id:modal.id,status:form.status,reason:form.reason,notes:form.notes}}))
+      const inserted = (data&&data[0]) || {system_id:modal.id,status:form.status,reason:form.reason||null,notes:form.notes||null,reported_by:form.reportedBy||'Staff',created_at:createdAt}
+      setStatuses((prev:any)=>({...prev,[modal.id]:inserted}))
+      // Prepend to history so the timeline reflects the change without a reload
+      setStatusHistory((prev:any)=>({...prev,[modal.id]:[inserted,...(prev[modal.id]||[])]}))
       showToast('Status updated')
       setModal(null)
       if(form.status==='out-of-service'||form.status==='maintenance'){
-        const newAlert = {type:form.status, property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:new Date().toISOString()}
+        const newAlert = {type:form.status, property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:createdAt}
         setAlertLog((prev:any)=>[newAlert,...prev])
         await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status, systemName:modal.name, propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', reason:form.reason})})
       }
     }
     setSaving(false)
+  }
+
+  const saveNote = async (systemId:string) => {
+    const draft = noteDrafts[systemId]
+    if(!draft || !draft.text.trim() || !draft.author.trim()) return
+    setSavingNote(systemId)
+    const createdAt = new Date().toISOString()
+    const {data, error} = await supabase.from('system_notes')
+      .insert({system_id:systemId, note:draft.text.trim(), author:draft.author.trim()})
+      .select()
+    if(error){ showToast('Error: '+error.message) }
+    else {
+      const inserted = (data&&data[0]) || {system_id:systemId, note:draft.text.trim(), author:draft.author.trim(), created_at:createdAt}
+      setSystemNotes((prev:any)=>({...prev,[systemId]:[inserted,...(prev[systemId]||[])]}))
+      setNoteDrafts((prev:any)=>({...prev,[systemId]:{text:'',author:draft.author}}))
+      showToast('Note added')
+    }
+    setSavingNote(null)
   }
 
   const savePsr = async () => {
@@ -272,6 +316,10 @@ export default function Home() {
                 const st = statuses[sys.id]
                 const statusKey = st?.status||'in-service'
                 const meta = STATUS_META[statusKey]
+                const history = statusHistory[sys.id]||[]
+                const notes   = systemNotes[sys.id]||[]
+                const historyOpen = !!expandedHistory[sys.id]
+                const draft = noteDrafts[sys.id]||{text:'',author:''}
                 return (
                   <div key={sys.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',marginBottom:'10px',background:'#fafafa'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'6px'}}>
@@ -284,6 +332,85 @@ export default function Home() {
                     {st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
                     {st?.notes  && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
                     <button onClick={()=>openModal(sys)} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>Update Status</button>
+
+                    {/* ── Status history (traceability) ── */}
+                    <div style={{marginTop:'10px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
+                      <div
+                        onClick={()=>setExpandedHistory(prev=>({...prev,[sys.id]:!historyOpen}))}
+                        style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}
+                      >
+                        <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Status History {history.length>0?'('+history.length+')':''}</span>
+                        <span style={{fontSize:'11px',color:'#94a3b8'}}>{historyOpen?'▲':'▼'}</span>
+                      </div>
+                      {historyOpen && (
+                        <div style={{marginTop:'8px'}}>
+                          {history.length===0
+                            ? <div style={{fontSize:'11px',color:'#94a3b8'}}>No status changes recorded.</div>
+                            : history.map((h:any,i:number)=>{
+                                const hm = STATUS_META[h.status]||STATUS_META['in-service']
+                                return (
+                                  <div key={h.id||i} style={{borderLeft:'2px solid '+hm.border,paddingLeft:'10px',marginBottom:'8px'}}>
+                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'2px'}}>
+                                      <span style={{background:hm.bg,color:hm.color,border:'1px solid '+hm.border,padding:'1px 7px',borderRadius:'10px',fontSize:'10px',fontWeight:'600'}}>{hm.label}</span>
+                                      <span style={{fontSize:'10px',color:'#94a3b8'}}>{fmtDateTime(h.created_at)}</span>
+                                    </div>
+                                    {h.reason && <div style={{fontSize:'10px',color:'#dc2626'}}>{h.reason}</div>}
+                                    {h.notes  && <div style={{fontSize:'10px',color:'#64748b',fontStyle:'italic'}}>{h.notes}</div>}
+                                    <div style={{fontSize:'10px',color:'#94a3b8',marginTop:'1px'}}>by {h.reported_by||'Staff'}</div>
+                                  </div>
+                                )
+                              })
+                          }
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ── System notes (append-only) ── */}
+                    <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
+                      <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'6px'}}>Notes {notes.length>0?'('+notes.length+')':''}</div>
+                      <input
+                        value={draft.author}
+                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,author:e.target.value}}))}
+                        placeholder='Your name'
+                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}
+                      />
+                      <textarea
+                        value={draft.text}
+                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,text:e.target.value}}))}
+                        placeholder='Add a note...'
+                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',minHeight:'48px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'5px'}}
+                      />
+                      <button
+                        onClick={()=>saveNote(sys.id)}
+                        disabled={savingNote===sys.id||!draft.text.trim()||!draft.author.trim()}
+                        style={{width:'100%',padding:'6px',background:(!draft.text.trim()||!draft.author.trim())?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:(!draft.text.trim()||!draft.author.trim())?'default':'pointer'}}
+                      >
+                        {savingNote===sys.id?'Adding...':'Add Note'}
+                      </button>
+                      <div style={{marginTop:'8px'}}>
+                        {notes.length===0
+                          ? <div style={{fontSize:'11px',color:'#94a3b8'}}>No notes yet.</div>
+                          : notes.map((n:any,i:number)=>{
+                              const isLatest = i===0
+                              return (
+                                <div key={n.id||i} style={{
+                                  background:isLatest?'#fffbeb':'#fff',
+                                  border:'1px solid '+(isLatest?'#fde68a':'#e2e8f0'),
+                                  borderRadius:'6px',padding:'8px',marginBottom:'6px'
+                                }}>
+                                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'3px'}}>
+                                    <span style={{fontSize:'10px',fontWeight:'700',color:'#334155'}}>
+                                      {n.author||'Staff'}{isLatest && <span style={{marginLeft:'6px',background:'#fde68a',color:'#92400e',padding:'0 6px',borderRadius:'8px',fontSize:'9px'}}>Latest</span>}
+                                    </span>
+                                    <span style={{fontSize:'9px',color:'#94a3b8'}}>{fmtDateTime(n.created_at)}</span>
+                                  </div>
+                                  <div style={{fontSize:'11px',color:'#1e293b',whiteSpace:'pre-wrap'}}>{n.note}</div>
+                                </div>
+                              )
+                            })
+                        }
+                      </div>
+                    </div>
                   </div>
                 )
               })
