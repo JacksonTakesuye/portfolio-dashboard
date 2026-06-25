@@ -183,6 +183,10 @@ export default function Home() {
   const [systemsOutOpen, setSystemsOutOpen] = useState(false)
   const [systemsOutSort, setSystemsOutSort] = useState<'recent'|'state'|'rm'|'property'>('recent')
   const [expandedOutRow, setExpandedOutRow] = useState<string|null>(null)
+  // ─── Admin delete: holds the entry pending confirmation ───
+  // shape: {kind, label, run:()=>Promise<void>}
+  const [pendingDelete, setPendingDelete] = useState<any>(null)
+  const [deleting,      setDeleting]      = useState(false)
   // ─── Role / access state (Phase C) ───
   const [userRole,      setUserRole]       = useState<string|null>(null)
   const [myProps,       setMyProps]        = useState<string[]>([])
@@ -626,6 +630,105 @@ export default function Home() {
     setLoadingVersions(false)
   }
 
+  // ─── Admin delete helpers ───────────────────────────────────────────────────
+  // Opens the confirmation modal with a description and the actual delete to run.
+  const askDelete = (label:string, run:()=>Promise<void>) => setPendingDelete({label, run})
+
+  const runPendingDelete = async () => {
+    if(!pendingDelete) return
+    setDeleting(true)
+    try { await pendingDelete.run() }
+    catch(e:any){ showToast('Delete error: '+(e?.message||'unknown')) }
+    setDeleting(false)
+    setPendingDelete(null)
+  }
+
+  // Delete a status event AND its dependent cost/vendor/document records + their files.
+  const deleteStatusEvent = async (eventId:number, systemId:string) => {
+    // remove dependent event files from storage first
+    const edocs = eventDocs[eventId]||[]
+    for(const d of edocs){ if(d.file_path) await supabase.storage.from('documents').remove([d.file_path]) }
+    const cost = eventCosts[eventId]
+    if(cost?.id) await supabase.from('event_cost_log').delete().eq('event_cost_id',cost.id)
+    await supabase.from('event_costs').delete().eq('status_update_id',eventId)
+    await supabase.from('event_vendors').delete().eq('status_update_id',eventId)
+    await supabase.from('event_documents').delete().eq('status_update_id',eventId)
+    const {error} = await supabase.from('status_updates').delete().eq('id',eventId)
+    if(error) throw error
+    // update local state
+    setStatusHistory((prev:any)=>({...prev,[systemId]:(prev[systemId]||[]).filter((h:any)=>h.id!==eventId)}))
+    setEventCosts((prev:any)=>{ const n={...prev}; delete n[eventId]; return n })
+    setEventVendors((prev:any)=>{ const n={...prev}; delete n[eventId]; return n })
+    setEventDocs((prev:any)=>{ const n={...prev}; delete n[eventId]; return n })
+    // recompute latest status for the badge from remaining history
+    setStatuses((prev:any)=>{
+      const remaining = (statusHistory[systemId]||[]).filter((h:any)=>h.id!==eventId)
+      const latest = remaining[0]
+      const n={...prev}
+      if(latest) n[systemId]=latest; else delete n[systemId]
+      return n
+    })
+    showToast('Status event deleted')
+  }
+
+  const deletePsrReport = async (report:any) => {
+    // remove this report's photos (records + files)
+    const {data:photos} = await supabase.from('psr_photos').select('*').eq('psr_report_id',report.id)
+    for(const p of (photos||[])){ if(p.file_path) await supabase.storage.from('documents').remove([p.file_path]) }
+    await supabase.from('psr_photos').delete().eq('psr_report_id',report.id)
+    await supabase.from('psr_report_versions').delete().eq('psr_report_id',report.id)
+    const {error} = await supabase.from('psr_reports').delete().eq('id',report.id)
+    if(error) throw error
+    setAllPsrReports((prev:any)=>prev.filter((r:any)=>r.id!==report.id))
+    showToast('PSR report deleted')
+  }
+
+  const deleteNote = async (noteId:number, systemId:string) => {
+    const {error} = await supabase.from('system_notes').delete().eq('id',noteId)
+    if(error) throw error
+    setSystemNotes((prev:any)=>({...prev,[systemId]:(prev[systemId]||[]).filter((n:any)=>n.id!==noteId)}))
+    showToast('Note deleted')
+  }
+
+  const deleteServicingVendor = async (vendorId:number, systemId:string) => {
+    const {error} = await supabase.from('system_vendors').delete().eq('id',vendorId)
+    if(error) throw error
+    setSystemVendors((prev:any)=>({...prev,[systemId]:(prev[systemId]||[]).filter((v:any)=>v.id!==vendorId)}))
+    showToast('Vendor deleted')
+  }
+
+  const deleteEventVendor = async (vendorId:number, eventId:number) => {
+    const {error} = await supabase.from('event_vendors').delete().eq('id',vendorId)
+    if(error) throw error
+    setEventVendors((prev:any)=>({...prev,[eventId]:(prev[eventId]||[]).filter((v:any)=>v.id!==vendorId)}))
+    showToast('Vendor deleted')
+  }
+
+  const deleteEventCost = async (cost:any, eventId:number) => {
+    if(cost?.id) await supabase.from('event_cost_log').delete().eq('event_cost_id',cost.id)
+    const {error} = await supabase.from('event_costs').delete().eq('status_update_id',eventId)
+    if(error) throw error
+    setEventCosts((prev:any)=>{ const n={...prev}; delete n[eventId]; return n })
+    if(cost?.id) setCostLogs((prev:any)=>{ const n={...prev}; delete n[cost.id]; return n })
+    showToast('Cost entry deleted')
+  }
+
+  const deleteDocument = async (doc:any) => {
+    if(doc.file_path) await supabase.storage.from('documents').remove([doc.file_path])
+    const {error} = await supabase.from('documents').delete().eq('id',doc.id)
+    if(error) throw error
+    setDocuments((prev:any)=>prev.filter((d:any)=>d.id!==doc.id))
+    showToast('Document deleted')
+  }
+
+  const deleteEventDoc = async (docItem:any, eventId:number) => {
+    if(docItem.file_path) await supabase.storage.from('documents').remove([docItem.file_path])
+    const {error} = await supabase.from('event_documents').delete().eq('id',docItem.id)
+    if(error) throw error
+    setEventDocs((prev:any)=>({...prev,[eventId]:(prev[eventId]||[]).filter((d:any)=>d.id!==docItem.id)}))
+    showToast('File deleted')
+  }
+
   const saveSysInfo = async (systemId:string) => {
     setSavingSysInfo(true)
     const existing = systemInfos[systemId]
@@ -824,11 +927,24 @@ export default function Home() {
                     </div>
                   </div>
                   <button onClick={()=>viewDocument(doc.file_path)} style={{padding:'5px 10px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer',flexShrink:0}}>View</button>
+                  {doc.id && TrashBtn('Delete document "'+doc.file_name+'"? This removes the file permanently. This cannot be undone.', ()=>deleteDocument(doc), 13)}
                 </div>
               )
             })
         }
       </div>
+    )
+  }
+
+  // Small admin-only trash icon. Shows only for admins; opens the confirm modal.
+  const TrashBtn = (label:string, run:()=>Promise<void>, size:number=14) => {
+    if(userRole!=='admin') return null
+    return (
+      <button
+        onClick={(e)=>{ e.stopPropagation(); askDelete(label, run) }}
+        title='Delete (admin)'
+        style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:size+'px',lineHeight:1,padding:'2px',flexShrink:0}}
+      >🗑️</button>
     )
   }
 
@@ -889,7 +1005,10 @@ export default function Home() {
                                   <div key={h.id||i} style={{borderLeft:'2px solid '+hm.border,paddingLeft:'10px',marginBottom:'8px'}}>
                                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'2px'}}>
                                       <span style={{background:hm.bg,color:hm.color,border:'1px solid '+hm.border,padding:'1px 7px',borderRadius:'10px',fontSize:'10px',fontWeight:'600'}}>{hm.label}</span>
-                                      <span style={{fontSize:'10px',color:'#94a3b8'}}>{fmtDateTime(h.created_at)}</span>
+                                      <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                                        <span style={{fontSize:'10px',color:'#94a3b8'}}>{fmtDateTime(h.created_at)}</span>
+                                        {h.id && TrashBtn('Delete this status event ('+(hm.label)+', '+fmtDateTime(h.created_at)+')? This also removes its cost, vendor, and file records. This cannot be undone.', ()=>deleteStatusEvent(h.id, sys.id), 12)}
+                                      </div>
                                     </div>
                                     {h.reason && <div style={{fontSize:'10px',color:'#dc2626'}}>{h.reason}</div>}
                                     {h.notes  && <div style={{fontSize:'10px',color:'#64748b',fontStyle:'italic'}}>{h.notes}</div>}
@@ -918,6 +1037,9 @@ export default function Home() {
                                           </div>
                                           {costOpen && (
                                             <div style={{marginTop:'8px'}}>
+                                              {userRole==='admin' && cost?.id && (
+                                                <button onClick={()=>askDelete('Delete the cost/ETA entry for this event? This also clears its edit history. This cannot be undone.', ()=>deleteEventCost(cost, h.id))} style={{width:'100%',padding:'5px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer',marginBottom:'6px'}}>🗑️ Delete Cost / ETA Entry</button>
+                                              )}
                                               {editable && (
                                                 <>
                                                   <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Cost ($)</div>
@@ -941,6 +1063,7 @@ export default function Home() {
                                                 <div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 6px',background:'#f8fafc',borderRadius:'5px',marginBottom:'4px'}}>
                                                   <span style={{fontSize:'10px',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'150px'}}>{d.file_name}</span>
                                                   <button onClick={()=>viewDocument(d.file_path)} style={{padding:'2px 8px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>View</button>
+                                                  {d.id && TrashBtn('Delete file "'+d.file_name+'" from this event? This cannot be undone.', ()=>deleteEventDoc(d, h.id), 11)}
                                                 </div>
                                               ))}
 
@@ -973,7 +1096,10 @@ export default function Home() {
                                               {/* Existing vendors for this event */}
                                               {evendors.map((v:any,vi:number)=>(
                                                 <div key={v.id||vi} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'5px',padding:'6px 8px',marginBottom:'5px'}}>
-                                                  <div style={{fontSize:'10px',fontWeight:'700',color:'#1e293b'}}>{v.vendor_name}</div>
+                                                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                                                    <div style={{fontSize:'10px',fontWeight:'700',color:'#1e293b'}}>{v.vendor_name}</div>
+                                                    {v.id && TrashBtn('Delete vendor "'+v.vendor_name+'" from this event? This cannot be undone.', ()=>deleteEventVendor(v.id, h.id), 11)}
+                                                  </div>
                                                   {v.phone && <div style={{fontSize:'9px',color:'#64748b'}}>{v.phone}</div>}
                                                   {v.email && <div style={{fontSize:'9px',color:'#2563eb'}}>{v.email}</div>}
                                                   {v.work_description && <div style={{fontSize:'9px',color:'#475569',marginTop:'2px',whiteSpace:'pre-wrap'}}>{v.work_description}</div>}
@@ -1043,7 +1169,10 @@ export default function Home() {
                                     <span style={{fontSize:'10px',fontWeight:'700',color:'#334155'}}>
                                       {n.author||'Staff'}{isLatest && <span style={{marginLeft:'6px',background:'#fde68a',color:'#92400e',padding:'0 6px',borderRadius:'8px',fontSize:'9px'}}>Latest</span>}
                                     </span>
-                                    <span style={{fontSize:'9px',color:'#94a3b8'}}>{fmtDateTime(n.created_at)}</span>
+                                    <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                                      <span style={{fontSize:'9px',color:'#94a3b8'}}>{fmtDateTime(n.created_at)}</span>
+                                      {n.id && TrashBtn('Delete this note? This cannot be undone.', ()=>deleteNote(n.id, sys.id), 11)}
+                                    </div>
                                   </div>
                                   <div style={{fontSize:'11px',color:'#1e293b',whiteSpace:'pre-wrap'}}>{n.note}</div>
                                 </div>
@@ -1128,9 +1257,10 @@ export default function Home() {
                               </div>
                             )
                           })()}
-                          <div style={{display:'flex',gap:'6px',marginTop:'8px'}}>
+                          <div style={{display:'flex',gap:'6px',marginTop:'8px',alignItems:'center'}}>
                             {editable && <button onClick={()=>openEditPsr(r)} style={{flex:1,padding:'6px',background:'#f1f5f9',color:'#334155',border:'1px solid #e2e8f0',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Edit This Report</button>}
                             <button onClick={()=>openVersions(r)} style={{flex:1,padding:'6px',background:'#eff6ff',color:'#2563eb',border:'1px solid #bfdbfe',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>See Prior Versions</button>
+                            {userRole==='admin' && <button onClick={()=>askDelete('Delete the PSR report dated '+r.report_date+'? This also removes its photos and version history. This cannot be undone.', ()=>deletePsrReport(r))} title='Delete (admin)' style={{padding:'6px 10px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>🗑️</button>}
                           </div>
                         </div>
                       )}
@@ -1416,6 +1546,7 @@ export default function Home() {
                                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                                       <span style={{fontSize:'11px',fontWeight:'600',color:'#1e293b'}}>{v.vendor_name}</span>
                                       {editable && <button onClick={()=>{setEditingVendor(v.id);setVendorEditForm({vendor_name:v.vendor_name,phone:v.phone,email:v.email})}} style={{padding:'1px 6px',background:'#f1f5f9',color:'#475569',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>Edit</button>}
+                                      {v.id && TrashBtn('Delete servicing vendor "'+v.vendor_name+'"? This cannot be undone.', ()=>deleteServicingVendor(v.id, sys.id), 11)}
                                     </div>
                                     {v.phone && <div style={{fontSize:'10px',color:'#64748b'}}>{v.phone}</div>}
                                     {v.email && <div style={{fontSize:'10px',color:'#2563eb'}}>{v.email}</div>}
@@ -1976,6 +2107,23 @@ export default function Home() {
       )}
 
       {/* ── Toast ── */}
+      {/* ── Admin delete confirmation ── */}
+      {pendingDelete && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:600,padding:'16px'}}>
+          <div style={{background:'#fff',borderRadius:'12px',padding:'20px',width:'100%',maxWidth:'380px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}}>
+              <span style={{fontSize:'20px'}}>⚠️</span>
+              <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>Confirm Delete</div>
+            </div>
+            <div style={{fontSize:'13px',color:'#475569',marginBottom:'18px',lineHeight:1.5}}>{pendingDelete.label}</div>
+            <div style={{display:'flex',gap:'10px'}}>
+              <button onClick={()=>setPendingDelete(null)} disabled={deleting} style={{flex:1,padding:'10px',background:'#f1f5f9',color:'#334155',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>
+              <button onClick={runPendingDelete} disabled={deleting} style={{flex:1,padding:'10px',background:'#dc2626',color:'#fff',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer'}}>{deleting?'Deleting...':'Delete'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Systems Out full view ── */}
       {systemsOutOpen && renderSystemsOut()}
 
