@@ -93,6 +93,12 @@ const fmtDateTime = (ts:string) => ts
   ? new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'})
   : ''
 
+// Friendly role labels for display
+const ROLE_LABELS: Record<string,string> = {
+  admin:'Administrator', rm:'Regional Manager', rsm:'Regional Service Manager',
+  cm:'Community Manager', sm:'Service Manager', team_member:'Team Member',
+}
+
 export default function Home() {
   const [properties,    setProperties]    = useState<any[]>([])
   const [systems,       setSystems]        = useState<any[]>([])
@@ -152,6 +158,10 @@ export default function Home() {
   const [pendingType,   setPendingType]    = useState<Record<string,string>>({})
   const [isMobile,      setIsMobile]       = useState(false)
   const [mobileTab,     setMobileTab]      = useState<'portfolio'|'alerts'|'settings'>('portfolio')
+  // ─── Role / access state (Phase C) ───
+  const [userRole,      setUserRole]       = useState<string|null>(null)
+  const [myProps,       setMyProps]        = useState<string[]>([])
+  const [userName,      setUserName]       = useState<string>('')
   const fileInputRefs = useRef<Record<string,HTMLInputElement|null>>({})
 
   // ─── Detect mobile ───────────────────────────────────────────────────────────
@@ -160,6 +170,21 @@ export default function Home() {
     check()
     window.addEventListener('resize', check)
     return () => window.removeEventListener('resize', check)
+  },[])
+
+  // ─── Load the logged-in user's role + assigned properties (Phase C) ───────────
+  useEffect(()=>{
+    async function loadAccess(){
+      const {data:{user}} = await supabase.auth.getUser()
+      if(!user) return
+      const {data} = await supabase.from('user_access').select('*').eq('user_id', user.id).single()
+      if(data){
+        setUserRole(data.role || null)
+        setMyProps(Array.isArray(data.assigned_property_ids) ? data.assigned_property_ids : [])
+        setUserName(data.full_name || '')
+      }
+    }
+    loadAccess()
   },[])
 
   // ─── Load data ────────────────────────────────────────────────────────────────
@@ -241,6 +266,15 @@ export default function Home() {
   const getStatus = (sysId:string) => statuses[sysId]?.status||'in-service'
   const propHasIssue = (prop:any) => systems.filter((s:any)=>s.property_id===prop.id).some((s:any)=>getStatus(s.id)==='out-of-service')
 
+  // ─── Access helpers (Phase C) ───
+  // canEdit: admin edits anything; everyone else edits only assigned properties.
+  const canEdit = (propId:string|undefined|null) => {
+    if(!propId) return false
+    if(userRole==='admin') return true
+    return myProps.includes(propId)
+  }
+  const isTeamMember = userRole==='team_member'
+
   const openModal = (sys:any) => {
     const current = statuses[sys.id]
     setForm({status:current?.status||'in-service', reason:current?.reason||'', notes:current?.notes||'', reportedBy:''})
@@ -263,7 +297,7 @@ export default function Home() {
       showToast('Status updated')
       setModal(null)
       if(form.status==='out-of-service'||form.status==='maintenance'){
-        const newAlert = {type:form.status, property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:createdAt}
+        const newAlert = {type:form.status, property_id:detailProp?.id||'', property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:createdAt}
         setAlertLog((prev:any)=>[newAlert,...prev])
         await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status, systemName:modal.name, propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', reason:form.reason})})
       }
@@ -286,7 +320,7 @@ export default function Home() {
       setNoteDrafts((prev:any)=>({...prev,[systemId]:{text:'',author:draft.author}}))
       showToast('Note added')
       const sys = systems.find((s:any)=>s.id===systemId)
-      const newAlert = {type:'note-added', property_name:detailProp?.name||'', system_name:sys?.name||'', reason:draft.text.trim(), created_at:createdAt}
+      const newAlert = {type:'note-added', property_id:detailProp?.id||'', property_name:detailProp?.name||'', system_name:sys?.name||'', reason:draft.text.trim(), created_at:createdAt}
       setAlertLog((prev:any)=>[newAlert,...prev])
       await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'note-added', systemName:sys?.name||'', propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', noteAuthor:draft.author.trim(), noteText:draft.text.trim()})})
     }
@@ -389,7 +423,7 @@ export default function Home() {
       setAllPsrReports((prev:any)=>[...(data||[]),...prev])
       setPsrForm({})
       setPsrMode('history')
-      const newAlert = {type:'psr-submitted', property_name:detailProp.name, report_date:new Date().toISOString().split('T')[0], created_at:new Date().toISOString()}
+      const newAlert = {type:'psr-submitted', property_id:detailProp.id, property_name:detailProp.name, report_date:new Date().toISOString().split('T')[0], created_at:new Date().toISOString()}
       setAlertLog((prev:any)=>[newAlert,...prev])
       await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'psr-submitted', propertyName:detailProp.name, propertyId:detailProp.id, reportDate:new Date().toISOString().split('T')[0]})})
     }
@@ -434,7 +468,7 @@ export default function Home() {
     setAllPsrReports((prev:any)=>prev.map((r:any)=>r.id===editingPsr.id?{...r,...updateData}:r))
 
     // 4. Notify all subscribers about the edit
-    const newAlert = {type:'psr-edited', property_name:detailProp?.name||'', report_date:editingPsr.report_date, reason:changeSummary, created_at:new Date().toISOString()}
+    const newAlert = {type:'psr-edited', property_id:detailProp?.id||'', property_name:detailProp?.name||'', report_date:editingPsr.report_date, reason:changeSummary, created_at:new Date().toISOString()}
     setAlertLog((prev:any)=>[newAlert,...prev])
     await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
       type:'psr-edited',
@@ -506,7 +540,9 @@ export default function Home() {
 
   // ─── Derived state ────────────────────────────────────────────────────────────
   const states = [...new Set(properties.map((p:any)=>p.state))].sort()
-  const filtered = properties.filter((p:any)=>{
+  // Team Members see only their assigned properties; everyone else sees all.
+  const visibleProperties = isTeamMember ? properties.filter((p:any)=>myProps.includes(p.id)) : properties
+  const filtered = visibleProperties.filter((p:any)=>{
     const tabOk = tab==='all'||(tab==='elevators'&&p.has_elevator)||(tab==='compactors'&&p.has_compactor)||(tab==='pools'&&p.has_pool)||(tab==='gates'&&p.has_gate)
     const stOk  = stateFilter==='all'||p.state===stateFilter
     return tabOk && stOk
@@ -521,6 +557,10 @@ export default function Home() {
     .sort((a:any,b:any)=>psrSort==='newest'
       ? new Date(b.report_date).getTime()-new Date(a.report_date).getTime()
       : new Date(a.report_date).getTime()-new Date(b.report_date).getTime())
+  // Alerts the current user is allowed to see (admin: all; others: only assigned properties)
+  const visibleAlerts = userRole==='admin'
+    ? alertLog
+    : alertLog.filter((a:any)=> a.property_id ? myProps.includes(a.property_id) : false)
 
   const TABS        = [['all','All'],['elevators','Elevators'],['compactors','Compactors'],['pools','Pools'],['gates','Gates']]
   const DETAIL_TABS = [['systems','Systems'],['psr','PSR Report'],['sysinfo','System Info'],['documents','Documents']]
@@ -529,7 +569,7 @@ export default function Home() {
   if(error)   return <div style={{padding:'40px',color:'red'}}>Error: {error}</div>
 
   // ─── A single document upload bucket (reused per system + property-wide) ───────
-  const renderDocBucket = (bucketKey:string, title:string, subtitle:string) => {
+  const renderDocBucket = (bucketKey:string, title:string, subtitle:string, editable:boolean) => {
     const docsInBucket = propDocuments
       .filter((d:any)=> bucketKey==='property' ? (d.system_id===null||d.system_id===undefined) : d.system_id===bucketKey)
       .filter((d:any)=> docFilter==='all' || (d.doc_type||'General')===docFilter)
@@ -543,27 +583,32 @@ export default function Home() {
           {subtitle && <div style={{fontSize:'10px',color:'#94a3b8'}}>{subtitle}</div>}
         </div>
 
-        {/* Required document type selector */}
-        <div style={{marginBottom:'8px'}}>
-          <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'4px'}}>Document Type (required before upload)</div>
-          <select value={chosenType} onChange={e=>setPendingType((p:any)=>({...p,[bucketKey]:e.target.value}))} style={{width:'100%',padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px'}}>
-            <option value=''>Select type...</option>
-            {DOC_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
-          </select>
-        </div>
+        {/* Upload controls only render if the user can edit this property */}
+        {editable && (
+          <>
+            {/* Required document type selector */}
+            <div style={{marginBottom:'8px'}}>
+              <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'4px'}}>Document Type (required before upload)</div>
+              <select value={chosenType} onChange={e=>setPendingType((p:any)=>({...p,[bucketKey]:e.target.value}))} style={{width:'100%',padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px'}}>
+                <option value=''>Select type...</option>
+                {DOC_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
 
-        {/* Upload zone — disabled until a type is chosen */}
-        <div
-          onDragOver={e=>{ if(chosenType){ e.preventDefault(); setDragOver(bucketKey) } }}
-          onDragLeave={()=>setDragOver(null)}
-          onDrop={e=> chosenType ? handleDrop(e,bucketKey) : e.preventDefault()}
-          onClick={()=>{ if(!chosenType){ showToast('Please choose a document type first'); return } fileInputRefs.current[bucketKey]?.click() }}
-          style={{border:'2px dashed '+(isOver?'#3b82f6':'#e2e8f0'),borderRadius:'8px',padding:'16px',textAlign:'center',cursor:chosenType?'pointer':'not-allowed',marginBottom:'10px',background:isOver?'#eff6ff':(chosenType?'#fafafa':'#f1f5f9'),opacity:chosenType?1:0.6}}
-        >
-          <div style={{fontSize:'20px',marginBottom:'4px'}}>📎</div>
-          <div style={{fontSize:'11px',color:'#64748b'}}>{isUp?'Uploading...':(chosenType?'Drop file here or tap to browse':'Choose a type above to enable upload')}</div>
-          <input ref={el=>{ fileInputRefs.current[bucketKey]=el }} type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadDocument(f,bucketKey); e.target.value=''}}/>
-        </div>
+            {/* Upload zone — disabled until a type is chosen */}
+            <div
+              onDragOver={e=>{ if(chosenType){ e.preventDefault(); setDragOver(bucketKey) } }}
+              onDragLeave={()=>setDragOver(null)}
+              onDrop={e=> chosenType ? handleDrop(e,bucketKey) : e.preventDefault()}
+              onClick={()=>{ if(!chosenType){ showToast('Please choose a document type first'); return } fileInputRefs.current[bucketKey]?.click() }}
+              style={{border:'2px dashed '+(isOver?'#3b82f6':'#e2e8f0'),borderRadius:'8px',padding:'16px',textAlign:'center',cursor:chosenType?'pointer':'not-allowed',marginBottom:'10px',background:isOver?'#eff6ff':(chosenType?'#fafafa':'#f1f5f9'),opacity:chosenType?1:0.6}}
+            >
+              <div style={{fontSize:'20px',marginBottom:'4px'}}>📎</div>
+              <div style={{fontSize:'11px',color:'#64748b'}}>{isUp?'Uploading...':(chosenType?'Drop file here or tap to browse':'Choose a type above to enable upload')}</div>
+              <input ref={el=>{ fileInputRefs.current[bucketKey]=el }} type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadDocument(f,bucketKey); e.target.value=''}}/>
+            </div>
+          </>
+        )}
 
         {/* Files in this bucket */}
         {docsInBucket.length===0
@@ -594,8 +639,17 @@ export default function Home() {
   }
 
   // ─── Detail panel content (shared desktop + mobile) ───────────────────────────
-  const renderDetailContent = () => (
+  const renderDetailContent = () => {
+  // editable = may the current user edit the property that's open?
+  const editable = detailProp ? canEdit(detailProp.id) : false
+  return (
     <>
+      {/* View-only banner when the user can't edit this property */}
+      {detailProp && !editable && (
+        <div style={{marginBottom:'12px',padding:'8px 10px',background:'#fef9c3',border:'1px solid #fde68a',borderRadius:'7px',fontSize:'11px',color:'#92400e',fontWeight:'600'}}>
+          View only — you are not assigned to this property, so editing is disabled.
+        </div>
+      )}
       {/* Systems tab */}
       {detailTab==='systems' && (
         <div>
@@ -620,7 +674,7 @@ export default function Home() {
                     </div>
                     {st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
                     {st?.notes  && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
-                    <button onClick={()=>openModal(sys)} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>Update Status</button>
+                    {editable && <button onClick={()=>openModal(sys)} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>Update Status</button>}
 
                     {/* ── Status history (traceability) ── */}
                     <div style={{marginTop:'10px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
@@ -666,21 +720,25 @@ export default function Home() {
                                           </div>
                                           {costOpen && (
                                             <div style={{marginTop:'8px'}}>
-                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Cost ($)</div>
-                                              <input value={cd.estimated_cost} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_cost:e.target.value}}))} placeholder='0.00' inputMode='decimal' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Completion Date</div>
-                                              <input type='date' value={cd.estimated_completion} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_completion:e.target.value}}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                              <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Your Name (required to save)</div>
-                                              <input value={cd.editor} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,editor:e.target.value}}))} placeholder='Editor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                              <button onClick={()=>saveCost(h,sys.id)} disabled={savingCost===h.id||!cd.editor.trim()} style={{width:'100%',padding:'6px',background:!cd.editor.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!cd.editor.trim()?'default':'pointer',marginBottom:'6px'}}>
-                                                {savingCost===h.id?'Saving...':(cost?'Update Cost / ETA':'Save Cost / ETA')}
-                                              </button>
+                                              {editable && (
+                                                <>
+                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Cost ($)</div>
+                                                  <input value={cd.estimated_cost} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_cost:e.target.value}}))} placeholder='0.00' inputMode='decimal' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Completion Date</div>
+                                                  <input type='date' value={cd.estimated_completion} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_completion:e.target.value}}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Your Name (required to save)</div>
+                                                  <input value={cd.editor} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,editor:e.target.value}}))} placeholder='Editor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                                  <button onClick={()=>saveCost(h,sys.id)} disabled={savingCost===h.id||!cd.editor.trim()} style={{width:'100%',padding:'6px',background:!cd.editor.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!cd.editor.trim()?'default':'pointer',marginBottom:'6px'}}>
+                                                    {savingCost===h.id?'Saving...':(cost?'Update Cost / ETA':'Save Cost / ETA')}
+                                                  </button>
 
-                                              {/* Files for this event */}
-                                              <label style={{display:'block',width:'100%',padding:'6px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
-                                                {uploadingEventDoc===h.id?'Uploading...':'+ Add Invoice / Quote'}
-                                                <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadEventDoc(h,sys.id,f)}}/>
-                                              </label>
+                                                  {/* Files for this event */}
+                                                  <label style={{display:'block',width:'100%',padding:'6px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
+                                                    {uploadingEventDoc===h.id?'Uploading...':'+ Add Invoice / Quote'}
+                                                    <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadEventDoc(h,sys.id,f)}}/>
+                                                  </label>
+                                                </>
+                                              )}
                                               {edocs.map((d:any,di:number)=>(
                                                 <div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 6px',background:'#f8fafc',borderRadius:'5px',marginBottom:'4px'}}>
                                                   <span style={{fontSize:'10px',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'150px'}}>{d.file_name}</span>
@@ -729,7 +787,7 @@ export default function Home() {
                           <div style={{marginTop:'8px'}}>
                             {vendors.map((v:any,vi:number)=>(
                               <div key={v.id||vi} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px',marginBottom:'6px'}}>
-                                {editingVendor===v.id ? (
+                                {editable && editingVendor===v.id ? (
                                   <div>
                                     <input value={vendorEditForm.vendor_name||''} onChange={e=>setVendorEditForm((p:any)=>({...p,vendor_name:e.target.value}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
                                     <input value={vendorEditForm.phone||''} onChange={e=>setVendorEditForm((p:any)=>({...p,phone:e.target.value}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
@@ -743,7 +801,7 @@ export default function Home() {
                                   <div>
                                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                                       <span style={{fontSize:'11px',fontWeight:'600',color:'#1e293b'}}>{v.vendor_name}</span>
-                                      <button onClick={()=>{setEditingVendor(v.id);setVendorEditForm({vendor_name:v.vendor_name,phone:v.phone,email:v.email})}} style={{padding:'1px 6px',background:'#f1f5f9',color:'#475569',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>Edit</button>
+                                      {editable && <button onClick={()=>{setEditingVendor(v.id);setVendorEditForm({vendor_name:v.vendor_name,phone:v.phone,email:v.email})}} style={{padding:'1px 6px',background:'#f1f5f9',color:'#475569',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>Edit</button>}
                                     </div>
                                     {v.phone && <div style={{fontSize:'10px',color:'#64748b'}}>{v.phone}</div>}
                                     {v.email && <div style={{fontSize:'10px',color:'#2563eb'}}>{v.email}</div>}
@@ -751,14 +809,16 @@ export default function Home() {
                                 )}
                               </div>
                             ))}
-                            <div style={{background:'#f8fafc',borderRadius:'6px',padding:'8px'}}>
-                              <input value={vd.vendor_name} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,vendor_name:e.target.value}}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                              <input value={vd.phone} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,phone:e.target.value}}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                              <input value={vd.email} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,email:e.target.value}}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                              <button onClick={()=>saveVendor(sys.id)} disabled={savingVendor===sys.id||!vd.vendor_name.trim()} style={{width:'100%',padding:'6px',background:!vd.vendor_name.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!vd.vendor_name.trim()?'default':'pointer'}}>
-                                {savingVendor===sys.id?'Adding...':'+ Add Vendor'}
-                              </button>
-                            </div>
+                            {editable && (
+                              <div style={{background:'#f8fafc',borderRadius:'6px',padding:'8px'}}>
+                                <input value={vd.vendor_name} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,vendor_name:e.target.value}}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                <input value={vd.phone} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,phone:e.target.value}}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                <input value={vd.email} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,email:e.target.value}}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                <button onClick={()=>saveVendor(sys.id)} disabled={savingVendor===sys.id||!vd.vendor_name.trim()} style={{width:'100%',padding:'6px',background:!vd.vendor_name.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!vd.vendor_name.trim()?'default':'pointer'}}>
+                                  {savingVendor===sys.id?'Adding...':'+ Add Vendor'}
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )
                       })()}
@@ -767,25 +827,29 @@ export default function Home() {
                     {/* ── System notes (append-only) ── */}
                     <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
                       <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'6px'}}>Notes {notes.length>0?'('+notes.length+')':''}</div>
-                      <input
-                        value={draft.author}
-                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,author:e.target.value}}))}
-                        placeholder='Your name'
-                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}
-                      />
-                      <textarea
-                        value={draft.text}
-                        onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,text:e.target.value}}))}
-                        placeholder='Add a note...'
-                        style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',minHeight:'48px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'5px'}}
-                      />
-                      <button
-                        onClick={()=>saveNote(sys.id)}
-                        disabled={savingNote===sys.id||!draft.text.trim()||!draft.author.trim()}
-                        style={{width:'100%',padding:'6px',background:(!draft.text.trim()||!draft.author.trim())?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:(!draft.text.trim()||!draft.author.trim())?'default':'pointer'}}
-                      >
-                        {savingNote===sys.id?'Adding...':'Add Note'}
-                      </button>
+                      {editable && (
+                        <>
+                          <input
+                            value={draft.author}
+                            onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,author:e.target.value}}))}
+                            placeholder='Your name'
+                            style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}
+                          />
+                          <textarea
+                            value={draft.text}
+                            onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,text:e.target.value}}))}
+                            placeholder='Add a note...'
+                            style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',minHeight:'48px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'5px'}}
+                          />
+                          <button
+                            onClick={()=>saveNote(sys.id)}
+                            disabled={savingNote===sys.id||!draft.text.trim()||!draft.author.trim()}
+                            style={{width:'100%',padding:'6px',background:(!draft.text.trim()||!draft.author.trim())?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:(!draft.text.trim()||!draft.author.trim())?'default':'pointer'}}
+                          >
+                            {savingNote===sys.id?'Adding...':'Add Note'}
+                          </button>
+                        </>
+                      )}
                       <div style={{marginTop:'8px'}}>
                         {notes.length===0
                           ? <div style={{fontSize:'11px',color:'#94a3b8'}}>No notes yet.</div>
@@ -823,8 +887,8 @@ export default function Home() {
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
             <div style={{fontWeight:'700',fontSize:'13px',color:'#1e293b'}}>PSR Reports</div>
             <div style={{display:'flex',gap:'6px'}}>
-              {psrMode!=='history' && <button onClick={()=>setPsrMode('history')} style={{padding:'5px 10px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>}
-              {psrMode==='history'  && <button onClick={()=>setPsrMode('new')}     style={{padding:'5px 10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>+ New</button>}
+              {editable && psrMode!=='history' && <button onClick={()=>setPsrMode('history')} style={{padding:'5px 10px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>}
+              {editable && psrMode==='history'  && <button onClick={()=>setPsrMode('new')}     style={{padding:'5px 10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>+ New</button>}
             </div>
           </div>
           {psrMode==='history' && (
@@ -865,7 +929,7 @@ export default function Home() {
                           )}
                           {r.edit_notes && <div style={{marginTop:'6px',padding:'6px',background:'#fef9c3',borderRadius:'5px',fontSize:'10px',color:'#92400e'}}>Changes: {r.edit_notes}</div>}
                           <div style={{display:'flex',gap:'6px',marginTop:'8px'}}>
-                            <button onClick={()=>openEditPsr(r)} style={{flex:1,padding:'6px',background:'#f1f5f9',color:'#334155',border:'1px solid #e2e8f0',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Edit This Report</button>
+                            {editable && <button onClick={()=>openEditPsr(r)} style={{flex:1,padding:'6px',background:'#f1f5f9',color:'#334155',border:'1px solid #e2e8f0',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Edit This Report</button>}
                             <button onClick={()=>openVersions(r)} style={{flex:1,padding:'6px',background:'#eff6ff',color:'#2563eb',border:'1px solid #bfdbfe',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>See Prior Versions</button>
                           </div>
                         </div>
@@ -875,7 +939,7 @@ export default function Home() {
               }
             </div>
           )}
-          {psrMode==='new' && (
+          {editable && psrMode==='new' && (
             <div>
               {SEC('Work Orders & Make Readies',<div>
                 {SI('Work Orders Total','work_orders_total',psrForm,setPsrForm)}
@@ -970,7 +1034,7 @@ export default function Home() {
               </button>
             </div>
           )}
-          {psrMode==='edit' && editingPsr && (
+          {editable && psrMode==='edit' && editingPsr && (
             <div>
               <div style={{fontWeight:'600',fontSize:'12px',color:'#1e293b',marginBottom:'10px'}}>Editing: {editingPsr.report_date}</div>
               {SEC('Work Orders & Make Readies',<div>
@@ -1098,9 +1162,9 @@ export default function Home() {
                     {SI('Warranty Expiry','warranty_expiry',localForm,setLocalForm)}
                     {SI('Last Inspection','last_inspection',localForm,setLocalForm)}
                     {SI('Notes','notes',localForm,setLocalForm)}
-                    <button onClick={()=>saveSysInfo(sys.id)} disabled={savingSysInfo} style={{width:'100%',padding:'7px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
+                    {editable && <button onClick={()=>saveSysInfo(sys.id)} disabled={savingSysInfo} style={{width:'100%',padding:'7px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
                       {savingSysInfo?'Saving...':'Save'}
-                    </button>
+                    </button>}
                   </div>
                 )
               })
@@ -1124,23 +1188,24 @@ export default function Home() {
           </div>
 
           {/* One bucket per system */}
-          {propSystems.map((sys:any)=> renderDocBucket(sys.id, sys.name, sys.system_type ? sys.system_type.charAt(0).toUpperCase()+sys.system_type.slice(1) : ''))}
+          {propSystems.map((sys:any)=> renderDocBucket(sys.id, sys.name, sys.system_type ? sys.system_type.charAt(0).toUpperCase()+sys.system_type.slice(1) : '', editable))}
 
           {/* Property-wide bucket */}
-          {renderDocBucket('property','Property-Wide Documents','Not tied to a specific system')}
+          {renderDocBucket('property','Property-Wide Documents','Not tied to a specific system', editable)}
         </div>
       )}
     </>
   )
+  }
 
   // ─── Alerts screen (mobile only) ─────────────────────────────────────────────
   const renderAlerts = () => (
     <div style={{flex:1,overflowY:'auto',padding:'12px',paddingBottom:'80px'}}>
       <div style={{fontWeight:'700',fontSize:'15px',color:'#1e293b',marginBottom:'4px'}}>Alerts</div>
-      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>Last 50 events across all properties</div>
-      {alertLog.length===0
+      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>{userRole==='admin'?'Last 50 events across all properties':'Recent events for your properties'}</div>
+      {visibleAlerts.length===0
         ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'13px',padding:'40px 0'}}>No alerts yet.</div>
-        : alertLog.map((a:any, i:number)=>{
+        : visibleAlerts.map((a:any, i:number)=>{
             const isOut   = a.type==='out-of-service'
             const isMaint = a.type==='maintenance'
             const isPsr   = a.type==='psr-submitted'
@@ -1201,17 +1266,23 @@ export default function Home() {
             <div style={{color:'#64748b',fontSize:'11px'}}>Portfolio Systems Dashboard</div>
           </div>
         </div>
+        {userRole && (
+          <div style={{textAlign:'right'}}>
+            {userName && <div style={{color:'#f8fafc',fontSize:'12px',fontWeight:'600'}}>{userName}</div>}
+            <div style={{color:'#64748b',fontSize:'10px'}}>{ROLE_LABELS[userRole]||userRole}</div>
+          </div>
+        )}
       </div>
 
       {/* ── Summary bar ── */}
       <div style={{background:'#fff',borderBottom:'1px solid #e2e8f0',padding:isMobile?'10px 12px':'12px 24px',display:'flex',gap:isMobile?'16px':'24px',overflowX:'auto',flexWrap:isMobile?'nowrap':'wrap',WebkitOverflowScrolling:'touch' as any}}>
         {[
-          {v:properties.length,                                                           l:'Communities', c:'#1e293b'},
-          {v:properties.filter((p:any)=>p.has_pool).length,                               l:'Pools',        c:'#0369a1'},
-          {v:properties.filter((p:any)=>p.has_gate).length,                               l:'Gates',        c:'#7c3aed'},
-          {v:properties.filter((p:any)=>p.has_elevator).length,                           l:'Elevators',    c:'#b45309'},
-          {v:properties.filter((p:any)=>p.has_compactor).length,                          l:'Compactors',   c:'#0f766e'},
-          {v:systems.filter((s:any)=>getStatus(s.id)==='out-of-service').length,           l:'Systems Out',  c:'#dc2626'},
+          {v:visibleProperties.length,                                                    l:'Communities', c:'#1e293b'},
+          {v:visibleProperties.filter((p:any)=>p.has_pool).length,                        l:'Pools',        c:'#0369a1'},
+          {v:visibleProperties.filter((p:any)=>p.has_gate).length,                        l:'Gates',        c:'#7c3aed'},
+          {v:visibleProperties.filter((p:any)=>p.has_elevator).length,                    l:'Elevators',    c:'#b45309'},
+          {v:visibleProperties.filter((p:any)=>p.has_compactor).length,                   l:'Compactors',   c:'#0f766e'},
+          {v:systems.filter((s:any)=>{ const sp=properties.find((p:any)=>p.id===s.property_id); const vis=!isTeamMember||(sp&&myProps.includes(sp.id)); return vis&&getStatus(s.id)==='out-of-service' }).length, l:'Systems Out',  c:'#dc2626'},
         ].map(s=>(
           <div key={s.l} style={{flexShrink:0}}>
             <div style={{fontSize:isMobile?'20px':'22px',fontWeight:'700',color:s.c}}>{s.v}</div>
