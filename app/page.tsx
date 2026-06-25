@@ -154,6 +154,13 @@ export default function Home() {
   const [expandedEventVendors, setExpandedEventVendors] = useState<Record<number,boolean>>({})
   const [eventVendorDrafts, setEventVendorDrafts] = useState<Record<number,{vendor_name:string,phone:string,email:string,work_description:string}>>({})
   const [savingEventVendor, setSavingEventVendor] = useState<number|null>(null)
+  // ─── PSR section photos ───
+  // Saved photos for the report currently open in history/edit, grouped by section
+  const [psrPhotos,     setPsrPhotos]      = useState<Record<string,any[]>>({})
+  // Photos held in New mode before the report has an id (grouped by section). Each item: {file, url}
+  const [pendingPsrPhotos, setPendingPsrPhotos] = useState<Record<string,{file:File,url:string}[]>>({})
+  const [uploadingPsrPhoto, setUploadingPsrPhoto] = useState<string|null>(null)
+  const [photoViewer,   setPhotoViewer]    = useState<string|null>(null)
   const [tab,           setTab]            = useState('all')
   // ─── Filter state (Filter Type → State or RM Region) ───
   const [filterType,    setFilterType]     = useState<'state'|'rm'>('state')
@@ -458,20 +465,91 @@ export default function Home() {
     setSavingEventVendor(null)
   }
 
+  // ─── PSR section photos ────────────────────────────────────────────────────
+  // PSR sections that support photos, mapped to a storage-safe key
+  const PSR_PHOTO_SECTIONS: Record<string,string> = {
+    'Pool / Spa':'pool_spa', 'Fitness Center':'fitness', 'Grills / Outdoor Cooking':'grills',
+    'Mailbox Center':'mailbox', 'Fireplaces / Firepits':'fireplaces', 'Elevators':'elevators',
+    'TV / Media Equipment':'tv_media', 'Gates / Access Control':'gates', 'Common Areas':'common_areas',
+    'Dog Stations':'dog_stations',
+  }
+
+  // Load saved photos for a given report, grouped by section
+  const loadPsrPhotos = async (reportId:number) => {
+    const {data} = await supabase.from('psr_photos').select('*').eq('psr_report_id', reportId).order('created_at',{ascending:true})
+    const grouped:Record<string,any[]> = {}
+    ;(data||[]).forEach((p:any)=>{ (grouped[p.section] = grouped[p.section]||[]).push(p) })
+    setPsrPhotos(grouped)
+  }
+
+  // Upload one photo to an existing (saved) report + section
+  const uploadPsrPhoto = async (reportId:number, propertyId:string, section:string, file:File) => {
+    setUploadingPsrPhoto(section)
+    const path = 'psr-'+reportId+'/'+section+'/'+Date.now()+'-'+file.name
+    const {error:upErr} = await supabase.storage.from('documents').upload(path,file)
+    if(upErr){ showToast('Upload error: '+upErr.message); setUploadingPsrPhoto(null); return }
+    const {data, error:dbErr} = await supabase.from('psr_photos')
+      .insert({psr_report_id:reportId, property_id:propertyId, section, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:userName||'Staff'})
+      .select()
+    if(dbErr){ showToast('DB error: '+dbErr.message); setUploadingPsrPhoto(null); return }
+    const inserted = (data&&data[0]) || {psr_report_id:reportId, section, file_name:file.name, file_path:path, file_size:file.size, created_at:new Date().toISOString()}
+    setPsrPhotos((prev:any)=>({...prev,[section]:[...(prev[section]||[]),inserted]}))
+    showToast('Photo added')
+    setUploadingPsrPhoto(null)
+  }
+
+  const deletePsrPhoto = async (photo:any, section:string) => {
+    const {error} = await supabase.from('psr_photos').delete().eq('id',photo.id)
+    if(error){ showToast('Error: '+error.message); return }
+    await supabase.storage.from('documents').remove([photo.file_path])
+    setPsrPhotos((prev:any)=>({...prev,[section]:(prev[section]||[]).filter((p:any)=>p.id!==photo.id)}))
+    showToast('Photo removed')
+  }
+
+  // In New mode (no report id yet): hold photos in memory, with a preview URL
+  const holdPendingPhoto = (section:string, file:File) => {
+    const url = URL.createObjectURL(file)
+    setPendingPsrPhotos((prev:any)=>({...prev,[section]:[...(prev[section]||[]),{file,url}]}))
+  }
+  const removePendingPhoto = (section:string, idx:number) => {
+    setPendingPsrPhotos((prev:any)=>{
+      const arr=[...(prev[section]||[])]
+      const [removed]=arr.splice(idx,1)
+      if(removed) URL.revokeObjectURL(removed.url)
+      return {...prev,[section]:arr}
+    })
+  }
+
   const savePsr = async () => {
     if(!detailProp) return
     setSavingPsr(true)
     const {data, error} = await supabase.from('psr_reports').insert({...psrForm, property_id:detailProp.id, report_date:new Date().toISOString().split('T')[0]}).select()
-    if(error) showToast('Error: '+error.message)
-    else {
-      showToast('PSR saved')
-      setAllPsrReports((prev:any)=>[...(data||[]),...prev])
-      setPsrForm({})
-      setPsrMode('history')
-      const newAlert = {type:'psr-submitted', property_id:detailProp.id, property_name:detailProp.name, report_date:new Date().toISOString().split('T')[0], created_at:new Date().toISOString()}
-      setAlertLog((prev:any)=>[newAlert,...prev])
-      await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'psr-submitted', propertyName:detailProp.name, propertyId:detailProp.id, reportDate:new Date().toISOString().split('T')[0]})})
+    if(error){ showToast('Error: '+error.message); setSavingPsr(false); return }
+    const saved = data&&data[0]
+    showToast('PSR saved')
+    setAllPsrReports((prev:any)=>[...(data||[]),...prev])
+
+    // Upload any held photos now that the report has an id. Report stays saved even if a photo fails.
+    if(saved?.id){
+      const failed:string[] = []
+      for(const section of Object.keys(pendingPsrPhotos)){
+        for(const item of (pendingPsrPhotos[section]||[])){
+          const path = 'psr-'+saved.id+'/'+section+'/'+Date.now()+'-'+item.file.name
+          const {error:upErr} = await supabase.storage.from('documents').upload(path,item.file)
+          if(upErr){ failed.push(item.file.name); continue }
+          await supabase.from('psr_photos').insert({psr_report_id:saved.id, property_id:detailProp.id, section, file_name:item.file.name, file_path:path, file_size:item.file.size, uploaded_by:userName||'Staff'})
+          URL.revokeObjectURL(item.url)
+        }
+      }
+      if(failed.length) showToast('Report saved, but these photos failed: '+failed.join(', '))
     }
+
+    setPsrForm({})
+    setPendingPsrPhotos({})
+    setPsrMode('history')
+    const newAlert = {type:'psr-submitted', property_id:detailProp.id, property_name:detailProp.name, report_date:new Date().toISOString().split('T')[0], created_at:new Date().toISOString()}
+    setAlertLog((prev:any)=>[newAlert,...prev])
+    await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'psr-submitted', propertyName:detailProp.name, propertyId:detailProp.id, reportDate:new Date().toISOString().split('T')[0]})})
     setSavingPsr(false)
   }
 
@@ -481,6 +559,7 @@ export default function Home() {
     setEditedBy('')
     setEditNotes('')
     setPsrMode('edit')
+    loadPsrPhotos(r.id)
   }
 
   const saveEditPsr = async () => {
@@ -617,6 +696,66 @@ export default function Home() {
 
   if(loading) return <div style={{padding:'40px',textAlign:'center'}}>Loading...</div>
   if(error)   return <div style={{padding:'40px',color:'red'}}>Error: {error}</div>
+
+  // ─── Reusable PSR section photo block ──────────────────────────────────────
+  // mode: 'new' uses pending (in-memory) photos; 'saved' uses uploaded photos tied to a report id
+  const renderPsrPhotos = (sectionLabel:string, mode:'new'|'saved', reportId?:number, propertyId?:string, canEditPhotos:boolean=true) => {
+    const section = PSR_PHOTO_SECTIONS[sectionLabel]
+    if(!section) return null
+    const pending = pendingPsrPhotos[section]||[]
+    const saved   = psrPhotos[section]||[]
+    const thumb = {width:'56px',height:'56px',objectFit:'cover' as any,borderRadius:'6px',border:'1px solid #e2e8f0',cursor:'pointer'}
+    return (
+      <div style={{marginTop:'8px',borderTop:'1px dashed #e2e8f0',paddingTop:'8px'}}>
+        <div style={{fontSize:'10px',fontWeight:'700',color:'#64748b',marginBottom:'6px'}}>📷 Photos</div>
+        <div style={{display:'flex',flexWrap:'wrap',gap:'6px',marginBottom:canEditPhotos?'6px':'0'}}>
+          {mode==='new'
+            ? pending.map((p:any,i:number)=>(
+                <div key={i} style={{position:'relative' as any}}>
+                  <img src={p.url} style={thumb} onClick={()=>setPhotoViewer(p.url)} alt=''/>
+                  {canEditPhotos && <button onClick={()=>removePendingPhoto(section,i)} style={{position:'absolute' as any,top:'-6px',right:'-6px',background:'#dc2626',color:'#fff',border:'none',borderRadius:'50%',width:'16px',height:'16px',fontSize:'10px',lineHeight:1,cursor:'pointer'}}>×</button>}
+                </div>
+              ))
+            : saved.map((p:any,i:number)=>(
+                <div key={p.id||i} style={{position:'relative' as any}}>
+                  <img src={'#'} data-path={p.file_path} style={thumb} onClick={()=>openPsrPhoto(p.file_path)} alt={p.file_name} title={p.file_name}
+                       ref={el=>{ if(el) hydratePsrThumb(el,p.file_path) }}/>
+                  {canEditPhotos && <button onClick={()=>deletePsrPhoto(p,section)} style={{position:'absolute' as any,top:'-6px',right:'-6px',background:'#dc2626',color:'#fff',border:'none',borderRadius:'50%',width:'16px',height:'16px',fontSize:'10px',lineHeight:1,cursor:'pointer'}}>×</button>}
+                </div>
+              ))
+          }
+          {((mode==='new'&&pending.length===0)||(mode==='saved'&&saved.length===0)) && (
+            <div style={{fontSize:'10px',color:'#94a3b8',alignSelf:'center'}}>No photos yet.</div>
+          )}
+        </div>
+        {canEditPhotos && (
+          <label style={{display:'inline-block',padding:'5px 10px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>
+            {uploadingPsrPhoto===section?'Uploading...':'+ Add Photo'}
+            <input type='file' accept='image/*' style={{display:'none'}} onChange={e=>{
+              const f=e.target.files?.[0]
+              if(!f) return
+              if(mode==='new') holdPendingPhoto(section,f)
+              else if(reportId&&propertyId) uploadPsrPhoto(reportId,propertyId,section,f)
+              e.target.value=''
+            }}/>
+          </label>
+        )}
+      </div>
+    )
+  }
+
+  // Saved-photo thumbnails need a signed URL; we fetch and set it on the <img> once.
+  const hydratePsrThumb = async (el:HTMLImageElement, path:string) => {
+    if(el.dataset.loaded==='1') return
+    el.dataset.loaded='1'
+    const {data} = await supabase.storage.from('documents').createSignedUrl(path,3600)
+    if(data?.signedUrl) el.src = data.signedUrl
+  }
+  // Open a saved photo full-size in the viewer
+  const openPsrPhoto = async (path:string) => {
+    const {data} = await supabase.storage.from('documents').createSignedUrl(path,3600)
+    if(data?.signedUrl) setPhotoViewer(data.signedUrl)
+  }
 
   // ─── A single document upload bucket (reused per system + property-wide) ───────
   const renderDocBucket = (bucketKey:string, title:string, subtitle:string, editable:boolean) => {
@@ -786,9 +925,9 @@ export default function Home() {
                                                     {savingCost===h.id?'Saving...':(cost?'Update Cost / ETA':'Save Cost / ETA')}
                                                   </button>
 
-                                                  {/* Files for this event */}
+                                                  {/* Files / photos for this event */}
                                                   <label style={{display:'block',width:'100%',padding:'6px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
-                                                    {uploadingEventDoc===h.id?'Uploading...':'+ Add Invoice / Quote'}
+                                                    {uploadingEventDoc===h.id?'Uploading...':'+ Add Photo / Invoice / Quote'}
                                                     <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadEventDoc(h,sys.id,f)}}/>
                                                   </label>
                                                 </>
@@ -943,7 +1082,7 @@ export default function Home() {
                 ? <div style={{fontSize:'12px',color:'#94a3b8',textAlign:'center',padding:'20px'}}>No PSR reports found.</div>
                 : filteredPsr.map((r:any)=>(
                     <div key={r.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',marginBottom:'8px',overflow:'hidden'}}>
-                      <div onClick={()=>setExpandedPsr(expandedPsr===r.id?null:r.id)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',background:'#f8fafc'}}>
+                      <div onClick={()=>{ const nx = expandedPsr===r.id?null:r.id; setExpandedPsr(nx); if(nx) loadPsrPhotos(r.id) }} style={{padding:'10px 12px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',background:'#f8fafc'}}>
                         <div>
                           <div style={{fontWeight:'600',fontSize:'12px',color:'#1e293b'}}>{r.report_date}</div>
                           <div style={{fontSize:'11px',color:'#94a3b8',marginTop:'2px'}}>
@@ -967,6 +1106,28 @@ export default function Home() {
                             </div>
                           )}
                           {r.edit_notes && <div style={{marginTop:'6px',padding:'6px',background:'#fef9c3',borderRadius:'5px',fontSize:'10px',color:'#92400e'}}>Changes: {r.edit_notes}</div>}
+                          {/* Section photos (view here; full add/manage in Edit) */}
+                          {expandedPsr===r.id && (()=>{
+                            const sectionsWithPhotos = Object.keys(PSR_PHOTO_SECTIONS).filter(lbl=>(psrPhotos[PSR_PHOTO_SECTIONS[lbl]]||[]).length>0)
+                            if(sectionsWithPhotos.length===0) return <div style={{marginTop:'8px',fontSize:'10px',color:'#94a3b8'}}>No photos attached. Use “Edit This Report” to add some.</div>
+                            return (
+                              <div style={{marginTop:'8px'}}>
+                                {sectionsWithPhotos.map(lbl=>(
+                                  <div key={lbl} style={{marginBottom:'8px'}}>
+                                    <div style={{fontSize:'10px',fontWeight:'700',color:'#475569',marginBottom:'4px'}}>{lbl}</div>
+                                    <div style={{display:'flex',flexWrap:'wrap',gap:'6px'}}>
+                                      {(psrPhotos[PSR_PHOTO_SECTIONS[lbl]]||[]).map((p:any,i:number)=>(
+                                        <img key={p.id||i} src={'#'} alt={p.file_name} title={p.file_name}
+                                             style={{width:'56px',height:'56px',objectFit:'cover' as any,borderRadius:'6px',border:'1px solid #e2e8f0',cursor:'pointer'}}
+                                             onClick={()=>openPsrPhoto(p.file_path)}
+                                             ref={el=>{ if(el) hydratePsrThumb(el,p.file_path) }}/>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )
+                          })()}
                           <div style={{display:'flex',gap:'6px',marginTop:'8px'}}>
                             {editable && <button onClick={()=>openEditPsr(r)} style={{flex:1,padding:'6px',background:'#f1f5f9',color:'#334155',border:'1px solid #e2e8f0',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Edit This Report</button>}
                             <button onClick={()=>openVersions(r)} style={{flex:1,padding:'6px',background:'#eff6ff',color:'#2563eb',border:'1px solid #bfdbfe',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>See Prior Versions</button>
@@ -1003,6 +1164,7 @@ export default function Home() {
                 {SI('Pool Gates Secured','pool_gates_secured',psrForm,setPsrForm)}
                 {SI('Pool Area Cleanliness','pool_area_cleanliness',psrForm,setPsrForm)}
                 {SI('Pool / Spa Notes','pool_spa_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Pool / Spa','new')}
               </div>)}
               {SEC('Fitness Center',<div>
                 {SI('Equipment Condition','fitness_equipment',psrForm,setPsrForm)}
@@ -1010,6 +1172,7 @@ export default function Home() {
                 {SI('Supplies Stocked','fitness_supplies_stocked',psrForm,setPsrForm)}
                 {SI('Access Control','fitness_access_control',psrForm,setPsrForm)}
                 {SI('Fitness Notes','fitness_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Fitness Center','new')}
               </div>)}
               {SEC('Grills / Outdoor Cooking',<div>
                 {SI('Grill Condition','grill_condition',psrForm,setPsrForm)}
@@ -1019,6 +1182,7 @@ export default function Home() {
                 {CB('Charcoal Full','charcoal_full',psrForm,setPsrForm)}
                 {CB('Charcoal Needed','charcoal_needed',psrForm,setPsrForm)}
                 {SI('Grill Notes','grill_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Grills / Outdoor Cooking','new')}
               </div>)}
               {SEC('Mailbox Center',<div>
                 {SI('Mailboxes Secured','mailboxes_secured',psrForm,setPsrForm)}
@@ -1026,17 +1190,20 @@ export default function Home() {
                 {SI('Area Cleanliness','mailbox_area_cleanliness',psrForm,setPsrForm)}
                 {SI('Lighting Operational','mailbox_lighting',psrForm,setPsrForm)}
                 {SI('Mailbox Notes','mailbox_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Mailbox Center','new')}
               </div>)}
               {SEC('Fireplaces / Firepits',<div>
                 {SI('Clubhouse Fireplace','clubhouse_fireplace_operational',psrForm,setPsrForm)}
                 {SI('Outdoor Fireplace','outdoor_fireplace_operational',psrForm,setPsrForm)}
                 {SI('Fireplace Notes','fireplace_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Fireplaces / Firepits','new')}
               </div>)}
               {SEC('Elevators',<div>
                 {['elevator_1','elevator_2','elevator_3','elevator_4','elevator_5','elevator_6'].map((f,i)=>(
                   <div key={f}>{SI('Elevator '+(i+1)+' Status',f,psrForm,setPsrForm)}</div>
                 ))}
                 {SI('Elevator Notes','elevator_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Elevators','new')}
               </div>)}
               {SEC('TV / Media Equipment',<div>
                 {SI('Clubhouse TVs','tv_clubhouse',psrForm,setPsrForm)}
@@ -1044,6 +1211,7 @@ export default function Home() {
                 {SI('Fitness Center TVs','tv_fitness',psrForm,setPsrForm)}
                 {SI('Lounge TVs','tv_lounge',psrForm,setPsrForm)}
                 {SI('TV Notes','tv_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('TV / Media Equipment','new')}
               </div>)}
               {SEC('Gates / Access Control',<div>
                 {SI('Entry Gate','gate_entry',psrForm,setPsrForm)}
@@ -1051,6 +1219,7 @@ export default function Home() {
                 {SI('Pedestrian Gate','gate_pedestrian',psrForm,setPsrForm)}
                 {SI('Access System','gate_access_system',psrForm,setPsrForm)}
                 {SI('Gate Notes','gate_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Gates / Access Control','new')}
               </div>)}
               {SEC('Common Areas',<div>
                 {SI('Clubhouse','common_clubhouse',psrForm,setPsrForm)}
@@ -1061,12 +1230,14 @@ export default function Home() {
                 {SI('Sidewalks','common_sidewalks',psrForm,setPsrForm)}
                 {SI('Trash','common_trash',psrForm,setPsrForm)}
                 {SI('Common Area Notes','common_area_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Common Areas','new')}
               </div>)}
               {SEC('Dog Stations',<div>
                 {SI('Stations Cleaned','dog_station_cleaned',psrForm,setPsrForm)}
                 {SI('Damage Present','dog_station_damaged',psrForm,setPsrForm)}
                 {SI('Bags Stocked','dog_station_bags',psrForm,setPsrForm)}
                 {SI('Dog Station Notes','dog_station_notes',psrForm,setPsrForm)}
+                {renderPsrPhotos('Dog Stations','new')}
               </div>)}
               <button onClick={savePsr} disabled={savingPsr} style={{width:'100%',padding:'10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer',marginTop:'8px'}}>
                 {savingPsr?'Saving...':'Save PSR Report'}
@@ -1099,6 +1270,7 @@ export default function Home() {
                 {SI('Pool Gates Secured','pool_gates_secured',editPsrForm,setEditPsrForm)}
                 {SI('Pool Area Cleanliness','pool_area_cleanliness',editPsrForm,setEditPsrForm)}
                 {SI('Pool / Spa Notes','pool_spa_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Pool / Spa','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Fitness Center',<div>
                 {SI('Equipment Condition','fitness_equipment',editPsrForm,setEditPsrForm)}
@@ -1106,6 +1278,7 @@ export default function Home() {
                 {SI('Supplies Stocked','fitness_supplies_stocked',editPsrForm,setEditPsrForm)}
                 {SI('Access Control','fitness_access_control',editPsrForm,setEditPsrForm)}
                 {SI('Fitness Notes','fitness_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Fitness Center','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Grills / Outdoor Cooking',<div>
                 {SI('Grill Condition','grill_condition',editPsrForm,setEditPsrForm)}
@@ -1115,6 +1288,7 @@ export default function Home() {
                 {CB('Charcoal Full','charcoal_full',editPsrForm,setEditPsrForm)}
                 {CB('Charcoal Needed','charcoal_needed',editPsrForm,setEditPsrForm)}
                 {SI('Grill Notes','grill_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Grills / Outdoor Cooking','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Mailbox Center',<div>
                 {SI('Mailboxes Secured','mailboxes_secured',editPsrForm,setEditPsrForm)}
@@ -1122,17 +1296,20 @@ export default function Home() {
                 {SI('Area Cleanliness','mailbox_area_cleanliness',editPsrForm,setEditPsrForm)}
                 {SI('Lighting Operational','mailbox_lighting',editPsrForm,setEditPsrForm)}
                 {SI('Mailbox Notes','mailbox_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Mailbox Center','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Fireplaces / Firepits',<div>
                 {SI('Clubhouse Fireplace','clubhouse_fireplace_operational',editPsrForm,setEditPsrForm)}
                 {SI('Outdoor Fireplace','outdoor_fireplace_operational',editPsrForm,setEditPsrForm)}
                 {SI('Fireplace Notes','fireplace_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Fireplaces / Firepits','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Elevators',<div>
                 {['elevator_1','elevator_2','elevator_3','elevator_4','elevator_5','elevator_6'].map((f,i)=>(
                   <div key={f}>{SI('Elevator '+(i+1)+' Status',f,editPsrForm,setEditPsrForm)}</div>
                 ))}
                 {SI('Elevator Notes','elevator_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Elevators','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('TV / Media Equipment',<div>
                 {SI('Clubhouse TVs','tv_clubhouse',editPsrForm,setEditPsrForm)}
@@ -1140,6 +1317,7 @@ export default function Home() {
                 {SI('Fitness Center TVs','tv_fitness',editPsrForm,setEditPsrForm)}
                 {SI('Lounge TVs','tv_lounge',editPsrForm,setEditPsrForm)}
                 {SI('TV Notes','tv_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('TV / Media Equipment','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Gates / Access Control',<div>
                 {SI('Entry Gate','gate_entry',editPsrForm,setEditPsrForm)}
@@ -1147,6 +1325,7 @@ export default function Home() {
                 {SI('Pedestrian Gate','gate_pedestrian',editPsrForm,setEditPsrForm)}
                 {SI('Access System','gate_access_system',editPsrForm,setEditPsrForm)}
                 {SI('Gate Notes','gate_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Gates / Access Control','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Common Areas',<div>
                 {SI('Clubhouse','common_clubhouse',editPsrForm,setEditPsrForm)}
@@ -1157,12 +1336,14 @@ export default function Home() {
                 {SI('Sidewalks','common_sidewalks',editPsrForm,setEditPsrForm)}
                 {SI('Trash','common_trash',editPsrForm,setEditPsrForm)}
                 {SI('Common Area Notes','common_area_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Common Areas','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               {SEC('Dog Stations',<div>
                 {SI('Stations Cleaned','dog_station_cleaned',editPsrForm,setEditPsrForm)}
                 {SI('Damage Present','dog_station_damaged',editPsrForm,setEditPsrForm)}
                 {SI('Bags Stocked','dog_station_bags',editPsrForm,setEditPsrForm)}
                 {SI('Dog Station Notes','dog_station_notes',editPsrForm,setEditPsrForm)}
+                {renderPsrPhotos('Dog Stations','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               <div style={{marginBottom:'10px'}}>
                 <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Edited By (required)</div>
@@ -1662,6 +1843,14 @@ export default function Home() {
       )}
 
       {/* ── Toast ── */}
+      {/* ── Photo viewer (full size) ── */}
+      {photoViewer && (
+        <div onClick={()=>setPhotoViewer(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:500,padding:'20px'}}>
+          <img src={photoViewer} alt='' style={{maxWidth:'100%',maxHeight:'100%',borderRadius:'8px',objectFit:'contain' as any}}/>
+          <button onClick={()=>setPhotoViewer(null)} style={{position:'fixed',top:'16px',right:'16px',background:'rgba(255,255,255,0.15)',color:'#fff',border:'none',borderRadius:'50%',width:'36px',height:'36px',fontSize:'20px',cursor:'pointer'}}>×</button>
+        </div>
+      )}
+
       {toast && (
         <div style={{position:'fixed',bottom:isMobile?'80px':'20px',right:'20px',background:'#166534',color:'#fff',padding:'10px 18px',borderRadius:'8px',fontSize:'13px',fontWeight:'500',zIndex:400}}>
           {toast}
