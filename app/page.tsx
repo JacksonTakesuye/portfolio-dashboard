@@ -15,6 +15,7 @@ const REASONS: Record<string,string[]> = {
   compactor:['Mechanical jam','Motor failure','Hydraulic issue','Overfill / blockage','Scheduled maintenance','Other'],
   pool:     ['Chemical imbalance','Equipment failure','Scheduled maintenance','Safety closure','Storm damage','Health department order','Other'],
   gate:     ['Power failure','Sensor malfunction','Physical damage','Scheduled maintenance','Other'],
+  fire_life_safety: ['Fire alarm fault','Fire panel trouble signal','Sprinkler / standpipe issue','Property on fire watch','Emergency lighting failure','Smoke/heat detector failure','Monitoring/communication loss','Scheduled inspection / testing','Other'],
 }
 
 const DOC_TYPES = ['Contract','Warranty','Invoice','General','Other']
