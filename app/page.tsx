@@ -141,7 +141,6 @@ export default function Home() {
   const [eventCosts,    setEventCosts]     = useState<Record<number,any>>({})
   const [costLogs,      setCostLogs]       = useState<Record<number,any[]>>({})
   const [eventDocs,     setEventDocs]      = useState<Record<number,any[]>>({})
-  const [expandedVendors, setExpandedVendors] = useState<Record<string,boolean>>({})
   const [expandedCosts,   setExpandedCosts]   = useState<Record<number,boolean>>({})
   const [vendorDrafts,  setVendorDrafts]   = useState<Record<string,{vendor_name:string,phone:string,email:string}>>({})
   const [savingVendor,  setSavingVendor]   = useState<string|null>(null)
@@ -150,6 +149,11 @@ export default function Home() {
   const [costDrafts,    setCostDrafts]     = useState<Record<number,{estimated_cost:string,estimated_completion:string,editor:string}>>({})
   const [savingCost,    setSavingCost]     = useState<number|null>(null)
   const [uploadingEventDoc, setUploadingEventDoc] = useState<number|null>(null)
+  // ─── Per-event vendors (keyed by status_update_id) ───
+  const [eventVendors,  setEventVendors]   = useState<Record<number,any[]>>({})
+  const [expandedEventVendors, setExpandedEventVendors] = useState<Record<number,boolean>>({})
+  const [eventVendorDrafts, setEventVendorDrafts] = useState<Record<number,{vendor_name:string,phone:string,email:string,work_description:string}>>({})
+  const [savingEventVendor, setSavingEventVendor] = useState<number|null>(null)
   const [tab,           setTab]            = useState('all')
   // ─── Filter state (Filter Type → State or RM Region) ───
   const [filterType,    setFilterType]     = useState<'state'|'rm'>('state')
@@ -221,6 +225,7 @@ export default function Home() {
       const {data:ecosts}           = await supabase.from('event_costs').select('*')
       const {data:eclogs}           = await supabase.from('event_cost_log').select('*').order('created_at',{ascending:false})
       const {data:edocs}            = await supabase.from('event_documents').select('*').order('created_at',{ascending:false})
+      const {data:evendors}         = await supabase.from('event_vendors').select('*').order('created_at',{ascending:true})
       if(e1) setError(e1.message)
       else if(e2) setError(e2.message)
       else {
@@ -261,6 +266,10 @@ export default function Home() {
         const edm:Record<number,any[]>={}
         ;(edocs||[]).forEach((d:any)=>{ (edm[d.status_update_id] = edm[d.status_update_id]||[]).push(d) })
         setEventDocs(edm)
+        // Event vendors keyed by status_update_id
+        const evm:Record<number,any[]>={}
+        ;(evendors||[]).forEach((v:any)=>{ (evm[v.status_update_id] = evm[v.status_update_id]||[]).push(v) })
+        setEventVendors(evm)
       }
       setLoading(false)
     }
@@ -430,6 +439,23 @@ export default function Home() {
     setEventDocs((prev:any)=>({...prev,[statusEvent.id]:[inserted,...(prev[statusEvent.id]||[])]}))
     showToast('File uploaded')
     setUploadingEventDoc(null)
+  }
+
+  // Add a vendor used on a specific status event
+  const saveEventVendor = async (statusEvent:any, systemId:string) => {
+    const draft = eventVendorDrafts[statusEvent.id]
+    if(!draft || !draft.vendor_name.trim()) return
+    setSavingEventVendor(statusEvent.id)
+    const createdAt = new Date().toISOString()
+    const {data, error} = await supabase.from('event_vendors')
+      .insert({status_update_id:statusEvent.id, system_id:systemId, vendor_name:draft.vendor_name.trim(), phone:draft.phone||null, email:draft.email||null, work_description:draft.work_description||null})
+      .select()
+    if(error){ showToast('Error: '+error.message); setSavingEventVendor(null); return }
+    const inserted = (data&&data[0]) || {status_update_id:statusEvent.id, system_id:systemId, vendor_name:draft.vendor_name.trim(), phone:draft.phone, email:draft.email, work_description:draft.work_description, created_at:createdAt}
+    setEventVendors((prev:any)=>({...prev,[statusEvent.id]:[...(prev[statusEvent.id]||[]),inserted]}))
+    setEventVendorDrafts((prev:any)=>({...prev,[statusEvent.id]:{vendor_name:'',phone:'',email:'',work_description:''}}))
+    showToast('Vendor added')
+    setSavingEventVendor(null)
   }
 
   const savePsr = async () => {
@@ -732,7 +758,11 @@ export default function Home() {
                                       const edocs = eventDocs[h.id]||[]
                                       const costOpen = !!expandedCosts[h.id]
                                       const cd = costDrafts[h.id]||{estimated_cost:cost?.estimated_cost??'',estimated_completion:cost?.estimated_completion??'',editor:''}
+                                      const evendors = eventVendors[h.id]||[]
+                                      const evOpen = !!expandedEventVendors[h.id]
+                                      const evd = eventVendorDrafts[h.id]||{vendor_name:'',phone:'',email:'',work_description:''}
                                       return (
+                                        <>
                                         <div style={{marginTop:'6px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px'}}>
                                           <div onClick={()=>setExpandedCosts(prev=>({...prev,[h.id]:!costOpen}))} style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}>
                                             <span style={{fontSize:'10px',fontWeight:'700',color:'#475569'}}>
@@ -785,6 +815,44 @@ export default function Home() {
                                             </div>
                                           )}
                                         </div>
+
+                                        {/* Vendor used on THIS event (collapsible, multiple allowed) */}
+                                        <div style={{marginTop:'6px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px'}}>
+                                          <div onClick={()=>setExpandedEventVendors(prev=>({...prev,[h.id]:!evOpen}))} style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}>
+                                            <span style={{fontSize:'10px',fontWeight:'700',color:'#475569'}}>
+                                              Vendor (this event){evendors.length>0?' ('+evendors.length+')':''}
+                                            </span>
+                                            <span style={{fontSize:'10px',color:'#94a3b8'}}>{evOpen?'▲':'▼'}</span>
+                                          </div>
+                                          {evOpen && (
+                                            <div style={{marginTop:'8px'}}>
+                                              {/* Existing vendors for this event */}
+                                              {evendors.map((v:any,vi:number)=>(
+                                                <div key={v.id||vi} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'5px',padding:'6px 8px',marginBottom:'5px'}}>
+                                                  <div style={{fontSize:'10px',fontWeight:'700',color:'#1e293b'}}>{v.vendor_name}</div>
+                                                  {v.phone && <div style={{fontSize:'9px',color:'#64748b'}}>{v.phone}</div>}
+                                                  {v.email && <div style={{fontSize:'9px',color:'#2563eb'}}>{v.email}</div>}
+                                                  {v.work_description && <div style={{fontSize:'9px',color:'#475569',marginTop:'2px',whiteSpace:'pre-wrap'}}>{v.work_description}</div>}
+                                                </div>
+                                              ))}
+                                              {evendors.length===0 && <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'5px'}}>No vendor recorded for this event.</div>}
+
+                                              {/* Add-vendor form (editable only) */}
+                                              {editable && (
+                                                <div style={{background:'#f8fafc',borderRadius:'5px',padding:'8px'}}>
+                                                  <input value={evd.vendor_name} onChange={e=>setEventVendorDrafts(prev=>({...prev,[h.id]:{...evd,vendor_name:e.target.value}}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                                  <input value={evd.phone} onChange={e=>setEventVendorDrafts(prev=>({...prev,[h.id]:{...evd,phone:e.target.value}}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                                  <input value={evd.email} onChange={e=>setEventVendorDrafts(prev=>({...prev,[h.id]:{...evd,email:e.target.value}}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                                  <textarea value={evd.work_description} onChange={e=>setEventVendorDrafts(prev=>({...prev,[h.id]:{...evd,work_description:e.target.value}}))} placeholder='Work performed / scope...' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',minHeight:'40px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                                  <button onClick={()=>saveEventVendor(h,sys.id)} disabled={savingEventVendor===h.id||!evd.vendor_name.trim()} style={{width:'100%',padding:'6px',background:!evd.vendor_name.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!evd.vendor_name.trim()?'default':'pointer'}}>
+                                                    {savingEventVendor===h.id?'Adding...':'+ Add Vendor'}
+                                                  </button>
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                        </>
                                       )
                                     })()}
                                   </div>
@@ -793,59 +861,6 @@ export default function Home() {
                           }
                         </div>
                       )}
-                    </div>
-
-                    {/* ── Vendor information (collapsible, multiple, editable) ── */}
-                    <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'8px'}}>
-                      <div
-                        onClick={()=>setExpandedVendors(prev=>({...prev,[sys.id]:!expandedVendors[sys.id]}))}
-                        style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}
-                      >
-                        <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Vendor Information {(systemVendors[sys.id]||[]).length>0?'('+(systemVendors[sys.id]||[]).length+')':''}</span>
-                        <span style={{fontSize:'11px',color:'#94a3b8'}}>{expandedVendors[sys.id]?'▲':'▼'}</span>
-                      </div>
-                      {expandedVendors[sys.id] && (()=>{
-                        const vendors = systemVendors[sys.id]||[]
-                        const vd = vendorDrafts[sys.id]||{vendor_name:'',phone:'',email:''}
-                        return (
-                          <div style={{marginTop:'8px'}}>
-                            {vendors.map((v:any,vi:number)=>(
-                              <div key={v.id||vi} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px',marginBottom:'6px'}}>
-                                {editable && editingVendor===v.id ? (
-                                  <div>
-                                    <input value={vendorEditForm.vendor_name||''} onChange={e=>setVendorEditForm((p:any)=>({...p,vendor_name:e.target.value}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                    <input value={vendorEditForm.phone||''} onChange={e=>setVendorEditForm((p:any)=>({...p,phone:e.target.value}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                    <input value={vendorEditForm.email||''} onChange={e=>setVendorEditForm((p:any)=>({...p,email:e.target.value}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                    <div style={{display:'flex',gap:'4px'}}>
-                                      <button onClick={()=>{setEditingVendor(null);setVendorEditForm({})}} style={{flex:1,padding:'5px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>
-                                      <button onClick={()=>saveVendorEdit(v.id,sys.id)} style={{flex:1,padding:'5px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Save</button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div>
-                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-                                      <span style={{fontSize:'11px',fontWeight:'600',color:'#1e293b'}}>{v.vendor_name}</span>
-                                      {editable && <button onClick={()=>{setEditingVendor(v.id);setVendorEditForm({vendor_name:v.vendor_name,phone:v.phone,email:v.email})}} style={{padding:'1px 6px',background:'#f1f5f9',color:'#475569',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>Edit</button>}
-                                    </div>
-                                    {v.phone && <div style={{fontSize:'10px',color:'#64748b'}}>{v.phone}</div>}
-                                    {v.email && <div style={{fontSize:'10px',color:'#2563eb'}}>{v.email}</div>}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                            {editable && (
-                              <div style={{background:'#f8fafc',borderRadius:'6px',padding:'8px'}}>
-                                <input value={vd.vendor_name} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,vendor_name:e.target.value}}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                <input value={vd.phone} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,phone:e.target.value}}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
-                                <input value={vd.email} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,email:e.target.value}}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                <button onClick={()=>saveVendor(sys.id)} disabled={savingVendor===sys.id||!vd.vendor_name.trim()} style={{width:'100%',padding:'6px',background:!vd.vendor_name.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!vd.vendor_name.trim()?'default':'pointer'}}>
-                                  {savingVendor===sys.id?'Adding...':'+ Add Vendor'}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })()}
                     </div>
 
                     {/* ── System notes (append-only) ── */}
@@ -1189,6 +1204,56 @@ export default function Home() {
                     {editable && <button onClick={()=>saveSysInfo(sys.id)} disabled={savingSysInfo} style={{width:'100%',padding:'7px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
                       {savingSysInfo?'Saving...':'Save'}
                     </button>}
+
+                    {/* ── Servicing Vendors (permanent vendors for this system) ── */}
+                    <div style={{marginTop:'12px',borderTop:'1px solid #e2e8f0',paddingTop:'10px'}}>
+                      <div style={{fontSize:'12px',fontWeight:'700',color:'#475569',marginBottom:'8px'}}>
+                        Servicing Vendors {(systemVendors[sys.id]||[]).length>0?'('+(systemVendors[sys.id]||[]).length+')':''}
+                      </div>
+                      {(()=>{
+                        const vendors = systemVendors[sys.id]||[]
+                        const vd = vendorDrafts[sys.id]||{vendor_name:'',phone:'',email:''}
+                        return (
+                          <div>
+                            {vendors.length===0 && <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'8px'}}>No servicing vendors on file.</div>}
+                            {vendors.map((v:any,vi:number)=>(
+                              <div key={v.id||vi} style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px',marginBottom:'6px'}}>
+                                {editable && editingVendor===v.id ? (
+                                  <div>
+                                    <input value={vendorEditForm.vendor_name||''} onChange={e=>setVendorEditForm((p:any)=>({...p,vendor_name:e.target.value}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                    <input value={vendorEditForm.phone||''} onChange={e=>setVendorEditForm((p:any)=>({...p,phone:e.target.value}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                    <input value={vendorEditForm.email||''} onChange={e=>setVendorEditForm((p:any)=>({...p,email:e.target.value}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                    <div style={{display:'flex',gap:'4px'}}>
+                                      <button onClick={()=>{setEditingVendor(null);setVendorEditForm({})}} style={{flex:1,padding:'5px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>
+                                      <button onClick={()=>saveVendorEdit(v.id,sys.id)} style={{flex:1,padding:'5px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Save</button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                                      <span style={{fontSize:'11px',fontWeight:'600',color:'#1e293b'}}>{v.vendor_name}</span>
+                                      {editable && <button onClick={()=>{setEditingVendor(v.id);setVendorEditForm({vendor_name:v.vendor_name,phone:v.phone,email:v.email})}} style={{padding:'1px 6px',background:'#f1f5f9',color:'#475569',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>Edit</button>}
+                                    </div>
+                                    {v.phone && <div style={{fontSize:'10px',color:'#64748b'}}>{v.phone}</div>}
+                                    {v.email && <div style={{fontSize:'10px',color:'#2563eb'}}>{v.email}</div>}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            {editable && (
+                              <div style={{background:'#f8fafc',borderRadius:'6px',padding:'8px'}}>
+                                <input value={vd.vendor_name} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,vendor_name:e.target.value}}))} placeholder='Vendor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                <input value={vd.phone} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,phone:e.target.value}}))} placeholder='Phone' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'4px'}}/>
+                                <input value={vd.email} onChange={e=>setVendorDrafts(prev=>({...prev,[sys.id]:{...vd,email:e.target.value}}))} placeholder='Email' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
+                                <button onClick={()=>saveVendor(sys.id)} disabled={savingVendor===sys.id||!vd.vendor_name.trim()} style={{width:'100%',padding:'6px',background:!vd.vendor_name.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!vd.vendor_name.trim()?'default':'pointer'}}>
+                                  {savingVendor===sys.id?'Adding...':'+ Add Servicing Vendor'}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </div>
                   </div>
                 )
               })
