@@ -179,6 +179,10 @@ export default function Home() {
   const [pendingType,   setPendingType]    = useState<Record<string,string>>({})
   const [isMobile,      setIsMobile]       = useState(false)
   const [mobileTab,     setMobileTab]      = useState<'portfolio'|'alerts'|'settings'>('portfolio')
+  // ─── Systems Out portfolio-wide view ───
+  const [systemsOutOpen, setSystemsOutOpen] = useState(false)
+  const [systemsOutSort, setSystemsOutSort] = useState<'recent'|'state'|'rm'|'property'>('recent')
+  const [expandedOutRow, setExpandedOutRow] = useState<string|null>(null)
   // ─── Role / access state (Phase C) ───
   const [userRole,      setUserRole]       = useState<string|null>(null)
   const [myProps,       setMyProps]        = useState<string[]>([])
@@ -1502,6 +1506,137 @@ export default function Home() {
     </div>
   )
 
+  // ─── Systems Out portfolio-wide view ─────────────────────────────────────────
+  const renderSystemsOut = () => {
+    // Build outage rows for systems currently out-of-service or maintenance,
+    // respecting role visibility (admin sees all; others only assigned properties).
+    const rows = systems
+      .map((s:any)=>{
+        const st = statuses[s.id]
+        const status = st?.status || 'in-service'
+        if(status!=='out-of-service' && status!=='maintenance') return null
+        const prop = properties.find((p:any)=>p.id===s.property_id)
+        if(!prop) return null
+        if(isTeamMember && !myProps.includes(prop.id)) return null
+        return {sys:s, prop, st, status, since:st?.created_at||null}
+      })
+      .filter(Boolean) as any[]
+
+    // Non-admins (other than team members who are already filtered) see only assigned props' outages
+    const visibleRows = userRole==='admin' ? rows : rows.filter((r:any)=> myProps.includes(r.prop.id))
+
+    const sortRows = (arr:any[]) => {
+      const a = [...arr]
+      if(systemsOutSort==='recent') a.sort((x,y)=> new Date(y.since||0).getTime()-new Date(x.since||0).getTime())
+      else if(systemsOutSort==='state') a.sort((x,y)=> (x.prop.state||'').localeCompare(y.prop.state||'') || (x.prop.name||'').localeCompare(y.prop.name||''))
+      else if(systemsOutSort==='rm') a.sort((x,y)=> (x.prop.rm||'').localeCompare(y.prop.rm||'') || (x.prop.name||'').localeCompare(y.prop.name||''))
+      else if(systemsOutSort==='property') a.sort((x,y)=> (x.prop.name||'').localeCompare(y.prop.name||''))
+      return a
+    }
+
+    const outRows   = sortRows(visibleRows.filter((r:any)=>r.status==='out-of-service'))
+    const maintRows = sortRows(visibleRows.filter((r:any)=>r.status==='maintenance'))
+
+    const daysSince = (ts:string|null) => {
+      if(!ts) return ''
+      const d = Math.floor((Date.now()-new Date(ts).getTime())/86400000)
+      return d<=0 ? 'today' : d===1 ? '1 day' : d+' days'
+    }
+
+    const renderGroup = (title:string, list:any[], statusKey:string) => {
+      const meta = STATUS_META[statusKey]
+      return (
+        <div style={{marginBottom:'24px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px'}}>
+            <span style={{background:meta.bg,color:meta.color,border:'1px solid '+meta.border,padding:'3px 10px',borderRadius:'20px',fontSize:'12px',fontWeight:'700'}}>{meta.label}</span>
+            <span style={{color:'#94a3b8',fontSize:'12px'}}>{list.length} {list.length===1?'system':'systems'}</span>
+          </div>
+          {list.length===0
+            ? <div style={{fontSize:'12px',color:'#94a3b8',padding:'8px 0'}}>None.</div>
+            : list.map((r:any)=>{
+                const rowKey = r.sys.id
+                const open = expandedOutRow===rowKey
+                const cost = eventCosts[r.st?.id]
+                const edocs = eventDocs[r.st?.id]||[]
+                const evendors = eventVendors[r.st?.id]||[]
+                return (
+                  <div key={rowKey} style={{border:'1px solid #e2e8f0',borderRadius:'8px',marginBottom:'8px',overflow:'hidden',background:'#fff'}}>
+                    <div onClick={()=>setExpandedOutRow(open?null:rowKey)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                      <div style={{minWidth:0,flex:1}}>
+                        <div style={{fontWeight:'600',fontSize:'13px',color:'#1e293b'}}>{r.sys.name} <span style={{color:'#94a3b8',fontWeight:'400'}}>· {r.prop.name}</span></div>
+                        <div style={{fontSize:'11px',color:'#64748b',marginTop:'2px'}}>
+                          {abbr(r.prop.state)}{r.prop.rm?' · '+r.prop.rm:''}{r.st?.reason?' · '+r.st.reason:''} · down {daysSince(r.since)}
+                        </div>
+                      </div>
+                      <span style={{fontSize:'12px',color:'#94a3b8',marginLeft:'8px'}}>{open?'▲':'▼'}</span>
+                    </div>
+                    {open && (
+                      <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#fafafa'}}>
+                        {/* Summary detail */}
+                        {r.st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'3px'}}>Reason: {r.st.reason}</div>}
+                        {r.st?.notes && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'3px'}}>{r.st.notes}</div>}
+                        <div style={{fontSize:'11px',color:'#475569',marginBottom:'3px'}}>Reported by {r.st?.reported_by||'—'} · {fmtDateTime(r.since)}</div>
+                        {cost?.estimated_cost!=null && <div style={{fontSize:'11px',color:'#0f766e',marginBottom:'3px'}}>Est. cost: ${cost.estimated_cost}{cost.estimated_completion?' · ETA '+cost.estimated_completion:''}</div>}
+                        {evendors.length>0 && <div style={{fontSize:'11px',color:'#475569',marginBottom:'3px'}}>Vendor: {evendors.map((v:any)=>v.vendor_name).join(', ')}</div>}
+                        {edocs.length>0 && (
+                          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',margin:'6px 0'}}>
+                            {edocs.map((d:any,di:number)=>(
+                              <button key={di} onClick={()=>viewDocument(d.file_path)} style={{padding:'3px 8px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>{d.file_name.length>18?d.file_name.slice(0,15)+'...':d.file_name}</button>
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          onClick={()=>{ setSystemsOutOpen(false); setSelectedProp(r.prop.id); setDetailTab('systems'); setMobileTab('portfolio') }}
+                          style={{marginTop:'6px',padding:'7px 12px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}
+                        >
+                          Open in {r.prop.name} →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })
+          }
+        </div>
+      )
+    }
+
+    return (
+      <div style={{position:'fixed',inset:0,background:'#f1f5f9',zIndex:150,display:'flex',flexDirection:'column'}}>
+        {/* Header */}
+        <div style={{background:'#0f172a',padding:isMobile?'12px 16px':'14px 24px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+            <button onClick={()=>setSystemsOutOpen(false)} style={{display:'flex',alignItems:'center',gap:'4px',background:'rgba(255,255,255,0.1)',border:'none',borderRadius:'20px',padding:'6px 14px',color:'#cbd5e1',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>← Back</button>
+            <div>
+              <div style={{color:'#f8fafc',fontSize:isMobile?'14px':'15px',fontWeight:'700'}}>Systems Out</div>
+              <div style={{color:'#64748b',fontSize:'11px'}}>{userRole==='admin'?'All properties':'Your assigned properties'}</div>
+            </div>
+          </div>
+        </div>
+        {/* Sort control */}
+        <div style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0',padding:isMobile?'8px 12px':'8px 24px',display:'flex',alignItems:'center',gap:'8px'}}>
+          <span style={{fontSize:'11px',fontWeight:'600',color:'#64748b'}}>Sort by</span>
+          <select value={systemsOutSort} onChange={e=>setSystemsOutSort(e.target.value as any)} style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer'}}>
+            <option value='recent'>Most Recent</option>
+            <option value='state'>State</option>
+            <option value='rm'>RM Region</option>
+            <option value='property'>Property</option>
+          </select>
+        </div>
+        {/* Body */}
+        <div style={{flex:1,overflowY:'auto',padding:isMobile?'12px':'20px 24px'}}>
+          {outRows.length===0 && maintRows.length===0
+            ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'14px',padding:'60px 0'}}>🎉 No systems are currently out of service or under maintenance.</div>
+            : <>
+                {renderGroup('Out of Service', outRows, 'out-of-service')}
+                {renderGroup('Maintenance', maintRows, 'maintenance')}
+              </>
+          }
+        </div>
+      </div>
+    )
+  }
+
   // ─── Property card system badges ─────────────────────────────────────────────
   const renderSystemBadges = (prop:any) => {
     const propSys = systems.filter((s:any)=>s.property_id===prop.id)
@@ -1560,11 +1695,11 @@ export default function Home() {
           {v:visibleProperties.filter((p:any)=>p.has_gate).length,                        l:'Gates',        c:'#7c3aed'},
           {v:visibleProperties.filter((p:any)=>p.has_elevator).length,                    l:'Elevators',    c:'#b45309'},
           {v:visibleProperties.filter((p:any)=>p.has_compactor).length,                   l:'Compactors',   c:'#0f766e'},
-          {v:systems.filter((s:any)=>{ const sp=properties.find((p:any)=>p.id===s.property_id); const vis=!isTeamMember||(sp&&myProps.includes(sp.id)); return vis&&getStatus(s.id)==='out-of-service' }).length, l:'Systems Out',  c:'#dc2626'},
+          {v:systems.filter((s:any)=>{ const sp=properties.find((p:any)=>p.id===s.property_id); const vis=!isTeamMember||(sp&&myProps.includes(sp.id)); return vis&&getStatus(s.id)==='out-of-service' }).length, l:'Systems Out',  c:'#dc2626', click:true},
         ].map(s=>(
-          <div key={s.l} style={{flexShrink:0}}>
+          <div key={s.l} onClick={()=>{ if((s as any).click) setSystemsOutOpen(true) }} style={{flexShrink:0,cursor:(s as any).click?'pointer':'default'}} title={(s as any).click?'View all systems out of service or under maintenance':undefined}>
             <div style={{fontSize:isMobile?'20px':'22px',fontWeight:'700',color:s.c}}>{s.v}</div>
-            <div style={{fontSize:'11px',color:'#94a3b8'}}>{s.l}</div>
+            <div style={{fontSize:'11px',color:'#94a3b8',display:'flex',alignItems:'center',gap:'3px'}}>{s.l}{(s as any).click && <span style={{fontSize:'9px',color:'#dc2626'}}>↗</span>}</div>
           </div>
         ))}
       </div>
@@ -1841,6 +1976,9 @@ export default function Home() {
       )}
 
       {/* ── Toast ── */}
+      {/* ── Systems Out full view ── */}
+      {systemsOutOpen && renderSystemsOut()}
+
       {/* ── Photo viewer (full size) ── */}
       {photoViewer && (
         <div onClick={()=>setPhotoViewer(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:500,padding:'20px'}}>
