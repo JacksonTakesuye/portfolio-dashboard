@@ -124,7 +124,6 @@ export default function Home() {
   const [psrMode,       setPsrMode]        = useState<'history'|'new'|'edit'>('history')
   const [editingPsr,    setEditingPsr]     = useState<any>(null)
   const [editPsrForm,   setEditPsrForm]    = useState<any>({})
-  const [editedBy,      setEditedBy]       = useState('')
   const [editNotes,     setEditNotes]      = useState('')
   const [savingEdit,    setSavingEdit]     = useState(false)
   const [psrSearch,     setPsrSearch]      = useState('')
@@ -298,6 +297,9 @@ export default function Home() {
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),3000) }
+  // Attribution always comes from the logged-in account, never manual entry.
+  // Falls back to a visible placeholder so missing accounts are obvious, not disguised as "Staff".
+  const actor = () => userName || 'Unknown user'
   const getStatus = (sysId:string) => statuses[sysId]?.status||'in-service'
   const propHasIssue = (prop:any) => systems.filter((s:any)=>s.property_id===prop.id).some((s:any)=>getStatus(s.id)==='out-of-service')
 
@@ -321,11 +323,11 @@ export default function Home() {
     setSaving(true)
     const createdAt = new Date().toISOString()
     const {data, error} = await supabase.from('status_updates')
-      .insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:form.reportedBy||'Staff'})
+      .insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:actor()})
       .select()
     if(error){ showToast('Error: '+error.message) }
     else {
-      const inserted = (data&&data[0]) || {system_id:modal.id,status:form.status,reason:form.reason||null,notes:form.notes||null,reported_by:form.reportedBy||'Staff',created_at:createdAt}
+      const inserted = (data&&data[0]) || {system_id:modal.id,status:form.status,reason:form.reason||null,notes:form.notes||null,reported_by:actor(),created_at:createdAt}
       setStatuses((prev:any)=>({...prev,[modal.id]:inserted}))
       // Prepend to history so the timeline reflects the change without a reload
       setStatusHistory((prev:any)=>({...prev,[modal.id]:[inserted,...(prev[modal.id]||[])]}))
@@ -342,22 +344,22 @@ export default function Home() {
 
   const saveNote = async (systemId:string) => {
     const draft = noteDrafts[systemId]
-    if(!draft || !draft.text.trim() || !draft.author.trim()) return
+    if(!draft || !draft.text.trim()) return
     setSavingNote(systemId)
     const createdAt = new Date().toISOString()
     const {data, error} = await supabase.from('system_notes')
-      .insert({system_id:systemId, note:draft.text.trim(), author:draft.author.trim()})
+      .insert({system_id:systemId, note:draft.text.trim(), author:actor()})
       .select()
     if(error){ showToast('Error: '+error.message) }
     else {
-      const inserted = (data&&data[0]) || {system_id:systemId, note:draft.text.trim(), author:draft.author.trim(), created_at:createdAt}
+      const inserted = (data&&data[0]) || {system_id:systemId, note:draft.text.trim(), author:actor(), created_at:createdAt}
       setSystemNotes((prev:any)=>({...prev,[systemId]:[inserted,...(prev[systemId]||[])]}))
-      setNoteDrafts((prev:any)=>({...prev,[systemId]:{text:'',author:draft.author}}))
+      setNoteDrafts((prev:any)=>({...prev,[systemId]:{text:'',author:''}}))
       showToast('Note added')
       const sys = systems.find((s:any)=>s.id===systemId)
       const newAlert = {type:'note-added', property_id:detailProp?.id||'', property_name:detailProp?.name||'', system_name:sys?.name||'', reason:draft.text.trim(), created_at:createdAt}
       setAlertLog((prev:any)=>[newAlert,...prev])
-      await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'note-added', systemName:sys?.name||'', propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', noteAuthor:draft.author.trim(), noteText:draft.text.trim()})})
+      await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'note-added', systemName:sys?.name||'', propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', noteAuthor:actor(), noteText:draft.text.trim()})})
     }
     setSavingNote(null)
   }
@@ -395,7 +397,7 @@ export default function Home() {
   // ─── Event costs (per status event, edits logged) ─────────────────────────────
   const saveCost = async (statusEvent:any, systemId:string) => {
     const draft = costDrafts[statusEvent.id]
-    if(!draft || !draft.editor.trim()){ showToast('Editor name required'); return }
+    if(!draft){ return }
     setSavingCost(statusEvent.id)
     const now = new Date().toISOString()
     const existing = eventCosts[statusEvent.id]
@@ -412,22 +414,22 @@ export default function Home() {
 
     if(existing){
       const {error} = await supabase.from('event_costs')
-        .update({estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now})
+        .update({estimated_cost:newCost, estimated_completion:newEta, last_edited_by:actor(), last_edited_at:now})
         .eq('id',existing.id)
       if(error){ showToast('Error: '+error.message); setSavingCost(null); return }
-      await supabase.from('event_cost_log').insert({event_cost_id:existing.id, edited_by:draft.editor.trim(), changes:changeStr})
-      const updated = {...existing, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now}
+      await supabase.from('event_cost_log').insert({event_cost_id:existing.id, edited_by:actor(), changes:changeStr})
+      const updated = {...existing, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:actor(), last_edited_at:now}
       setEventCosts((prev:any)=>({...prev,[statusEvent.id]:updated}))
-      setCostLogs((prev:any)=>({...prev,[existing.id]:[{edited_by:draft.editor.trim(),changes:changeStr,created_at:now},...(prev[existing.id]||[])]}))
+      setCostLogs((prev:any)=>({...prev,[existing.id]:[{edited_by:actor(),changes:changeStr,created_at:now},...(prev[existing.id]||[])]}))
     } else {
       const {data, error} = await supabase.from('event_costs')
-        .insert({status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now})
+        .insert({status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:actor(), last_edited_at:now})
         .select()
       if(error){ showToast('Error: '+error.message); setSavingCost(null); return }
-      const inserted = (data&&data[0]) || {id:Date.now(), status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:draft.editor.trim(), last_edited_at:now}
-      await supabase.from('event_cost_log').insert({event_cost_id:inserted.id, edited_by:draft.editor.trim(), changes:'Initial entry — '+changeStr})
+      const inserted = (data&&data[0]) || {id:Date.now(), status_update_id:statusEvent.id, system_id:systemId, estimated_cost:newCost, estimated_completion:newEta, last_edited_by:actor(), last_edited_at:now}
+      await supabase.from('event_cost_log').insert({event_cost_id:inserted.id, edited_by:actor(), changes:'Initial entry — '+changeStr})
       setEventCosts((prev:any)=>({...prev,[statusEvent.id]:inserted}))
-      setCostLogs((prev:any)=>({...prev,[inserted.id]:[{edited_by:draft.editor.trim(),changes:'Initial entry — '+changeStr,created_at:now}]}))
+      setCostLogs((prev:any)=>({...prev,[inserted.id]:[{edited_by:actor(),changes:'Initial entry — '+changeStr,created_at:now}]}))
     }
     showToast('Cost / ETA saved')
     setSavingCost(null)
@@ -556,7 +558,6 @@ export default function Home() {
   const openEditPsr = (r:any) => {
     setEditingPsr(r)
     setEditPsrForm({...r})
-    setEditedBy('')
     setEditNotes('')
     setPsrMode('edit')
     loadPsrPhotos(r.id)
@@ -577,14 +578,14 @@ export default function Home() {
       snapshot:      editingPsr,
       change_summary: changeSummary,
       edit_note:     editNotes||null,
-      edited_by:     editedBy||'Staff',
+      edited_by:     actor(),
       edited_at:     new Date().toISOString(),
     })
     if(verErr){ showToast('Version save error: '+verErr.message); setSavingEdit(false); return }
 
     // 3. Update the live report. We keep edit_notes as a combined human-readable record.
     const combinedNote = changeSummary + (editNotes ? ' || Note: '+editNotes : '')
-    const updateData = {...editPsrForm, edited_by:editedBy||'Staff', edited_at:new Date().toISOString(), edit_notes:combinedNote}
+    const updateData = {...editPsrForm, edited_by:actor(), edited_at:new Date().toISOString(), edit_notes:combinedNote}
     const {error} = await supabase.from('psr_reports').update(updateData).eq('id',editingPsr.id)
     if(error){ showToast('Error: '+error.message); setSavingEdit(false); return }
 
@@ -599,7 +600,7 @@ export default function Home() {
       propertyName: detailProp?.name||'',
       propertyId:   detailProp?.id||'',
       reportDate:   editingPsr.report_date,
-      editedBy:     editedBy||'Staff',
+      editedBy:     actor(),
       changeSummary,
     })})
 
@@ -919,9 +920,9 @@ export default function Home() {
                                                   <input value={cd.estimated_cost} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_cost:e.target.value}}))} placeholder='0.00' inputMode='decimal' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
                                                   <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Completion Date</div>
                                                   <input type='date' value={cd.estimated_completion} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_completion:e.target.value}}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Your Name (required to save)</div>
-                                                  <input value={cd.editor} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,editor:e.target.value}}))} placeholder='Editor name' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                                  <button onClick={()=>saveCost(h,sys.id)} disabled={savingCost===h.id||!cd.editor.trim()} style={{width:'100%',padding:'6px',background:!cd.editor.trim()?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:!cd.editor.trim()?'default':'pointer',marginBottom:'6px'}}>
+                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Saving as</div>
+                                                  <div style={{padding:'5px 8px',borderRadius:'5px',background:'#f1f5f9',border:'1px solid #e2e8f0',fontSize:'11px',color:'#334155',fontWeight:'600',marginBottom:'5px'}}>{userName||'Unknown user'}</div>
+                                                  <button onClick={()=>saveCost(h,sys.id)} disabled={savingCost===h.id} style={{width:'100%',padding:'6px',background:'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer',marginBottom:'6px'}}>
                                                     {savingCost===h.id?'Saving...':(cost?'Update Cost / ETA':'Save Cost / ETA')}
                                                   </button>
 
@@ -1007,12 +1008,7 @@ export default function Home() {
                       <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'6px'}}>Notes {notes.length>0?'('+notes.length+')':''}</div>
                       {editable && (
                         <>
-                          <input
-                            value={draft.author}
-                            onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,author:e.target.value}}))}
-                            placeholder='Your name'
-                            style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}
-                          />
+                          <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'5px'}}>Posting as <span style={{fontWeight:'700',color:'#475569'}}>{userName||'Unknown user'}</span></div>
                           <textarea
                             value={draft.text}
                             onChange={e=>setNoteDrafts(prev=>({...prev,[sys.id]:{...draft,text:e.target.value}}))}
@@ -1021,8 +1017,8 @@ export default function Home() {
                           />
                           <button
                             onClick={()=>saveNote(sys.id)}
-                            disabled={savingNote===sys.id||!draft.text.trim()||!draft.author.trim()}
-                            style={{width:'100%',padding:'6px',background:(!draft.text.trim()||!draft.author.trim())?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:(!draft.text.trim()||!draft.author.trim())?'default':'pointer'}}
+                            disabled={savingNote===sys.id||!draft.text.trim()}
+                            style={{width:'100%',padding:'6px',background:(!draft.text.trim())?'#cbd5e1':'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:(!draft.text.trim())?'default':'pointer'}}
                           >
                             {savingNote===sys.id?'Adding...':'Add Note'}
                           </button>
@@ -1346,8 +1342,10 @@ export default function Home() {
                 {renderPsrPhotos('Dog Stations','saved',editingPsr?.id,editingPsr?.property_id,!!editable)}
               </div>)}
               <div style={{marginBottom:'10px'}}>
-                <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Edited By (required)</div>
-                <input value={editedBy} onChange={e=>setEditedBy(e.target.value)} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',boxSizing:'border-box' as any}}/>
+                <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Edited By</div>
+                <div style={{padding:'6px 8px',borderRadius:'5px',background:'#f1f5f9',border:'1px solid #e2e8f0',fontSize:'12px',color:'#334155',fontWeight:'600'}}>
+                  {userName || 'Not signed in — attribution unavailable'}
+                </div>
               </div>
               <div style={{marginBottom:'10px'}}>
                 <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Note about this edit (optional)</div>
@@ -1356,7 +1354,7 @@ export default function Home() {
               <div style={{padding:'8px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:'6px',fontSize:'10px',color:'#166534',marginBottom:'8px'}}>
                 A snapshot of the current report will be saved to version history before your changes are applied.
               </div>
-              <button onClick={saveEditPsr} disabled={savingEdit||!editedBy.trim()} style={{width:'100%',padding:'10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
+              <button onClick={saveEditPsr} disabled={savingEdit} style={{width:'100%',padding:'10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
                 {savingEdit?'Saving...':'Save Changes'}
               </button>
             </div>
@@ -1784,7 +1782,7 @@ export default function Home() {
             </div>
             <div style={{marginBottom:'16px'}}>
               <div style={{fontSize:'12px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Reported By</div>
-              <input value={form.reportedBy} onChange={e=>setForm(f=>({...f,reportedBy:e.target.value}))} style={{width:'100%',padding:'8px 10px',borderRadius:'7px',border:'1px solid #e2e8f0',fontSize:'13px',boxSizing:'border-box' as any}}/>
+              <div style={{padding:'8px 10px',borderRadius:'7px',background:'#f1f5f9',border:'1px solid #e2e8f0',fontSize:'13px',color:'#334155',fontWeight:'600'}}>{userName || 'Not signed in — attribution unavailable'}</div>
             </div>
             <div style={{display:'flex',gap:'10px'}}>
               <button onClick={()=>setModal(null)} style={{flex:1,padding:'10px',background:'#f1f5f9',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:'600',cursor:'pointer',color:'#64748b'}}>Cancel</button>
