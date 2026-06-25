@@ -27,6 +27,13 @@ const DOC_TYPE_COLORS: Record<string,{bg:string,color:string}> = {
   Other:   {bg:'#f5f3ff',color:'#7c3aed'},
 }
 
+// Map full state names (as stored in the DB) to clean two-letter abbreviations for display
+const STATE_ABBR: Record<string,string> = {
+  'Alabama':'AL','Florida':'FL','Georgia':'GA','North Carolina':'NC',
+  'South Carolina':'SC','Tennessee':'TN','Texas':'TX',
+}
+const abbr = (state:string) => STATE_ABBR[state] || state
+
 // Human-friendly labels for PSR fields, used when building the change summary
 const PSR_FIELD_LABELS: Record<string,string> = {
   work_orders_total:'Work Orders Total', work_orders_over_48h:'Work Orders Over 48h', work_orders_explanation:'Work Orders Explanation',
@@ -143,7 +150,10 @@ export default function Home() {
   const [savingCost,    setSavingCost]     = useState<number|null>(null)
   const [uploadingEventDoc, setUploadingEventDoc] = useState<number|null>(null)
   const [tab,           setTab]            = useState('all')
+  // ─── Filter state (Filter Type → State or RM Region) ───
+  const [filterType,    setFilterType]     = useState<'state'|'rm'>('state')
   const [stateFilter,   setStateFilter]    = useState('all')
+  const [rmFilter,      setRmFilter]       = useState('all')
   const [modal,         setModal]          = useState<any>(null)
   const [form,          setForm]           = useState({status:'in-service',reason:'',notes:'',reportedBy:''})
   const [saving,        setSaving]         = useState(false)
@@ -162,6 +172,7 @@ export default function Home() {
   const [userRole,      setUserRole]       = useState<string|null>(null)
   const [myProps,       setMyProps]        = useState<string[]>([])
   const [userName,      setUserName]       = useState<string>('')
+  const [signingOut,    setSigningOut]     = useState(false)
   const fileInputRefs = useRef<Record<string,HTMLInputElement|null>>({})
 
   // ─── Detect mobile ───────────────────────────────────────────────────────────
@@ -186,6 +197,13 @@ export default function Home() {
     }
     loadAccess()
   },[])
+
+  // ─── Sign out ─────────────────────────────────────────────────────────────────
+  const handleSignOut = async () => {
+    setSigningOut(true)
+    await supabase.auth.signOut()
+    window.location.href = '/login'
+  }
 
   // ─── Load data ────────────────────────────────────────────────────────────────
   useEffect(()=>{
@@ -540,12 +558,17 @@ export default function Home() {
 
   // ─── Derived state ────────────────────────────────────────────────────────────
   const states = [...new Set(properties.map((p:any)=>p.state))].sort()
+  // Unique RMs present in the portfolio (skip blanks), sorted alphabetically
+  const rms = [...new Set(properties.map((p:any)=>p.rm).filter(Boolean))].sort()
   // Team Members see only their assigned properties; everyone else sees all.
   const visibleProperties = isTeamMember ? properties.filter((p:any)=>myProps.includes(p.id)) : properties
   const filtered = visibleProperties.filter((p:any)=>{
     const tabOk = tab==='all'||(tab==='elevators'&&p.has_elevator)||(tab==='compactors'&&p.has_compactor)||(tab==='pools'&&p.has_pool)||(tab==='gates'&&p.has_gate)
-    const stOk  = stateFilter==='all'||p.state===stateFilter
-    return tabOk && stOk
+    // State and RM filters are independent — whichever filter type is active is the one applied.
+    const filterOk = filterType==='state'
+      ? (stateFilter==='all' || p.state===stateFilter)
+      : (rmFilter==='all'    || p.rm===rmFilter)
+    return tabOk && filterOk
   })
   const byState = states.map(s=>({state:s, props:filtered.filter((p:any)=>p.state===s)})).filter(g=>g.props.length>0)
   const detailProp    = selectedProp ? properties.find((p:any)=>p.id===selectedProp) : null
@@ -1266,12 +1289,22 @@ export default function Home() {
             <div style={{color:'#64748b',fontSize:'11px'}}>Portfolio Systems Dashboard</div>
           </div>
         </div>
-        {userRole && (
-          <div style={{textAlign:'right'}}>
-            {userName && <div style={{color:'#f8fafc',fontSize:'12px',fontWeight:'600'}}>{userName}</div>}
-            <div style={{color:'#64748b',fontSize:'10px'}}>{ROLE_LABELS[userRole]||userRole}</div>
-          </div>
-        )}
+        {/* Right side: user name/role + Sign Out */}
+        <div style={{display:'flex',alignItems:'center',gap:isMobile?'10px':'14px'}}>
+          {userRole && (
+            <div style={{textAlign:'right'}}>
+              {userName && <div style={{color:'#f8fafc',fontSize:'12px',fontWeight:'600'}}>{userName}</div>}
+              <div style={{color:'#64748b',fontSize:'10px'}}>{ROLE_LABELS[userRole]||userRole}</div>
+            </div>
+          )}
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            style={{background:'rgba(255,255,255,0.1)',color:'#f8fafc',border:'1px solid rgba(255,255,255,0.2)',borderRadius:'7px',padding:isMobile?'6px 10px':'7px 14px',fontSize:'12px',fontWeight:'600',cursor:signingOut?'default':'pointer',whiteSpace:'nowrap' as any}}
+          >
+            {signingOut?'Signing out...':'Sign Out'}
+          </button>
+        </div>
       </div>
 
       {/* ── Summary bar ── */}
@@ -1294,6 +1327,7 @@ export default function Home() {
       {/* ── Filter bar (portfolio tab only on mobile) ── */}
       {(!isMobile || mobileTab==='portfolio') && (
         <div style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0',padding:isMobile?'8px 12px':'8px 24px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:'8px'}}>
+          {/* System type tabs (All / Elevators / ...) */}
           <div style={{display:'flex',background:'#fff',borderRadius:'7px',border:'1px solid #e2e8f0',overflow:'hidden',overflowX:'auto'}}>
             {TABS.map(([v,l])=>(
               <button key={v} onClick={()=>setTab(v)} style={{padding:'6px 12px',fontSize:'12px',fontWeight:'600',cursor:'pointer',border:'none',background:tab===v?'#3b82f6':'transparent',color:tab===v?'#fff':'#94a3b8',whiteSpace:'nowrap' as any}}>
@@ -1301,12 +1335,47 @@ export default function Home() {
               </button>
             ))}
           </div>
-          <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
-            {['all',...states].map(s=>(
-              <button key={s} onClick={()=>setStateFilter(s)} style={{padding:'3px 9px',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer',border:stateFilter===s?'1.5px solid #3b82f6':'1px solid #e2e8f0',background:stateFilter===s?'#eff6ff':'#fff',color:stateFilter===s?'#1d4ed8':'#64748b'}}>
-                {s==='all'?'All States':s.toUpperCase()}
-              </button>
-            ))}
+
+          {/* Filter Type dropdown + dependent value dropdown */}
+          <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+              <span style={{fontSize:'11px',fontWeight:'600',color:'#64748b'}}>Filter by</span>
+              <select
+                value={filterType}
+                onChange={e=>{
+                  const v = e.target.value as 'state'|'rm'
+                  setFilterType(v)
+                  // Reset the value selection so a stale filter from the other type isn't applied
+                  setStateFilter('all')
+                  setRmFilter('all')
+                }}
+                style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer'}}
+              >
+                <option value='state'>State</option>
+                <option value='rm'>RM Region</option>
+              </select>
+            </div>
+
+            {/* The actual filter values — content depends on the chosen Filter Type */}
+            {filterType==='state' ? (
+              <select
+                value={stateFilter}
+                onChange={e=>setStateFilter(e.target.value)}
+                style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer',minWidth:'140px'}}
+              >
+                <option value='all'>All States</option>
+                {states.map(s=><option key={s} value={s}>{abbr(s)} — {s}</option>)}
+              </select>
+            ) : (
+              <select
+                value={rmFilter}
+                onChange={e=>setRmFilter(e.target.value)}
+                style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer',minWidth:'160px'}}
+              >
+                <option value='all'>All RM Regions</option>
+                {rms.map(r=><option key={r} value={r}>{r}</option>)}
+              </select>
+            )}
           </div>
         </div>
       )}
@@ -1320,7 +1389,7 @@ export default function Home() {
             {byState.map(group=>(
               <div key={group.state} style={{marginBottom:'28px'}}>
                 <div style={{fontWeight:'700',fontSize:'13px',marginBottom:'10px',display:'flex',alignItems:'center',gap:'8px'}}>
-                  <span style={{background:'#1e293b',color:'#fff',borderRadius:'4px',padding:'2px 8px',fontSize:'11px'}}>{group.state.toUpperCase()}</span>
+                  <span style={{background:'#1e293b',color:'#fff',borderRadius:'4px',padding:'2px 8px',fontSize:'11px'}}>{abbr(group.state)}</span>
                   <span style={{color:'#94a3b8',fontSize:'12px'}}>{group.props.length} {group.props.length===1?'community':'communities'}</span>
                 </div>
                 <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(auto-fill,minmax(260px,1fr))',gap:'12px'}}>
@@ -1333,7 +1402,7 @@ export default function Home() {
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                         <div style={{flex:1,minWidth:0}}>
                           <div style={{fontWeight:'600',fontSize:'13px',color:'#1e293b',marginBottom:'2px'}}>{prop.name}</div>
-                          <div style={{fontSize:'11px',color:'#64748b'}}>{prop.city}, {prop.state.toUpperCase()}</div>
+                          <div style={{fontSize:'11px',color:'#64748b'}}>{prop.city}, {abbr(prop.state)}{prop.rm?' · '+prop.rm:''}</div>
                         </div>
                         {propHasIssue(prop) && (
                           <span style={{background:'#fef2f2',color:'#dc2626',fontSize:'10px',fontWeight:'600',padding:'2px 7px',borderRadius:'10px',flexShrink:0,marginLeft:'8px'}}>Issue</span>
@@ -1370,7 +1439,7 @@ export default function Home() {
                 <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>{detailProp.name}</div>
                 <button onClick={()=>setSelectedProp(null)} style={{background:'none',border:'none',cursor:'pointer',fontSize:'18px',color:'#94a3b8',lineHeight:1}}>×</button>
               </div>
-              <div style={{fontSize:'12px',color:'#64748b'}}>{detailProp.city}, {detailProp.state.toUpperCase()}</div>
+              <div style={{fontSize:'12px',color:'#64748b'}}>{detailProp.city}, {abbr(detailProp.state)}{detailProp.rm?' · '+detailProp.rm:''}</div>
             </div>
             <div style={{display:'flex',borderBottom:'1px solid #e2e8f0'}}>
               {DETAIL_TABS.map(([v,l])=>(
@@ -1398,7 +1467,7 @@ export default function Home() {
             </button>
             <div>
               <div style={{color:'#f8fafc',fontSize:'13px',fontWeight:'600'}}>{detailProp.name}</div>
-              <div style={{color:'#64748b',fontSize:'10px'}}>{detailProp.city}, {detailProp.state.toUpperCase()}</div>
+              <div style={{color:'#64748b',fontSize:'10px'}}>{detailProp.city}, {abbr(detailProp.state)}{detailProp.rm?' · '+detailProp.rm:''}</div>
             </div>
           </div>
           <div style={{display:'flex',background:'#fff',borderBottom:'1px solid #e2e8f0'}}>
