@@ -192,6 +192,7 @@ export default function Home() {
   const [siteVisitDocs, setSiteVisitDocs] = useState<Record<number,any[]>>({})
   const [visitNote,     setVisitNote]     = useState('')
   const [savingVisit,   setSavingVisit]   = useState(false)
+  const [pendingVisitFiles, setPendingVisitFiles] = useState<File[]>([])
   const [uploadingVisitDoc, setUploadingVisitDoc] = useState<number|null>(null)
   const [expandedVisit, setExpandedVisit] = useState<number|null>(null)
   // ─── Role / access state (Phase C) ───
@@ -354,10 +355,31 @@ export default function Home() {
       .insert({property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null})
       .select()
     if(error){ showToast('Error: '+error.message); setSavingVisit(false); return }
-    const inserted = (data&&data[0]) || {property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null, created_at:new Date().toISOString()}
+    const inserted = (data&&data[0]) || {id:Date.now(), property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null, created_at:new Date().toISOString()}
     setSiteVisits((prev:any)=>({...prev,[detailProp.id]:[inserted,...(prev[detailProp.id]||[])]}))
+
+    // Upload any files attached during creation, now that the visit has an id.
+    if(inserted?.id && pendingVisitFiles.length>0){
+      const failed:string[] = []
+      const uploadedDocs:any[] = []
+      for(const file of pendingVisitFiles){
+        const path = 'site-visit-'+inserted.id+'/'+Date.now()+'-'+file.name
+        const {error:upErr} = await supabase.storage.from('documents').upload(path,file)
+        if(upErr){ failed.push(file.name); continue }
+        const {data:docData} = await supabase.from('site_visit_documents')
+          .insert({site_visit_id:inserted.id, property_id:detailProp.id, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:actor()})
+          .select()
+        uploadedDocs.push((docData&&docData[0]) || {site_visit_id:inserted.id, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:actor(), created_at:new Date().toISOString()})
+      }
+      if(uploadedDocs.length) setSiteVisitDocs((prev:any)=>({...prev,[inserted.id]:[...uploadedDocs,...(prev[inserted.id]||[])]}))
+      if(failed.length) showToast('Visit saved, but these files failed: '+failed.join(', '))
+      else showToast('Site visit logged')
+    } else {
+      showToast('Site visit logged')
+    }
+
     setVisitNote('')
-    showToast('Site visit logged')
+    setPendingVisitFiles([])
     setSavingVisit(false)
   }
 
@@ -1047,7 +1069,26 @@ export default function Home() {
                         <div style={{fontWeight:'600',fontSize:'13px'}}>{sys.name}</div>
                         <div style={{fontSize:'11px',color:'#64748b',textTransform:'capitalize'}}>{sys.system_type}</div>
                       </div>
-                      <span style={{background:meta.bg,color:meta.color,border:'1px solid '+meta.border,padding:'2px 8px',borderRadius:'20px',fontSize:'11px',fontWeight:'600'}}>{meta.label}</span>
+                      <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'3px',flexShrink:0}}>
+                        <span style={{background:meta.bg,color:meta.color,border:'1px solid '+meta.border,padding:'2px 8px',borderRadius:'20px',fontSize:'11px',fontWeight:'600'}}>{meta.label}</span>
+                        {(statusKey==='out-of-service'||statusKey==='maintenance') && (()=>{
+                          // Staleness of the current outage: most recent of status event, its cost edit, or latest note.
+                          const candidates:number[] = []
+                          if(st?.created_at) candidates.push(new Date(st.created_at).getTime())
+                          const cost = st?.id?eventCosts[st.id]:null
+                          if(cost?.last_edited_at) candidates.push(new Date(cost.last_edited_at).getTime())
+                          const ns = systemNotes[sys.id]||[]
+                          if(ns[0]?.created_at) candidates.push(new Date(ns[0].created_at).getTime())
+                          const latest = candidates.length?Math.max(...candidates):null
+                          const daysAgo = latest!==null?Math.floor((Date.now()-latest)/86400000):null
+                          const stale = daysAgo!==null && daysAgo>7
+                          return (
+                            <span style={{fontSize:'9px',color:stale?'#dc2626':'#94a3b8',fontWeight:stale?'700':'400',textAlign:'right'}}>
+                              Updated {daysAgo===null?'—':(daysAgo===0?'today':daysAgo+'d ago')}{stale?' · stale':''}
+                            </span>
+                          )
+                        })()}
+                      </div>
                     </div>
                     {st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
                     {st?.notes  && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
@@ -1575,32 +1616,6 @@ export default function Home() {
                 return (
                   <div key={sys.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',marginBottom:'12px',background:'#fafafa'}}>
                     <div style={{fontWeight:'600',fontSize:'13px',marginBottom:'8px'}}>{sys.name}</div>
-                    {(()=>{
-                      // "Last Updated" only shows for systems currently out-of-service or in maintenance.
-                      const curStatus = statuses[sys.id]?.status||'in-service'
-                      if(curStatus!=='out-of-service' && curStatus!=='maintenance') return null
-                      // Most recent activity touching this system's current outage: status event, its cost edit, or latest note.
-                      const candidates:number[] = []
-                      const stTs = statuses[sys.id]?.created_at; if(stTs) candidates.push(new Date(stTs).getTime())
-                      const evId = statuses[sys.id]?.id
-                      const cost = evId?eventCosts[evId]:null
-                      if(cost?.last_edited_at) candidates.push(new Date(cost.last_edited_at).getTime())
-                      const notes = systemNotes[sys.id]||[]
-                      if(notes[0]?.created_at) candidates.push(new Date(notes[0].created_at).getTime())
-                      const latest = candidates.length?Math.max(...candidates):null
-                      const meta = STATUS_META[curStatus]
-                      const daysAgo = latest!==null?Math.floor((Date.now()-latest)/86400000):null
-                      const stale = daysAgo!==null && daysAgo>7
-                      return (
-                        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',padding:'6px 8px',background:meta.bg,border:'1px solid '+meta.border,borderRadius:'6px'}}>
-                          <span style={{fontSize:'10px',fontWeight:'700',color:meta.color}}>{meta.label}</span>
-                          <span style={{fontSize:'10px',color:'#64748b'}}>
-                            · Last updated {latest!==null?fmtDateTime(new Date(latest).toISOString()):'—'}
-                            {daysAgo!==null && <span style={{color:stale?'#dc2626':'#64748b',fontWeight:stale?'700':'400'}}> ({daysAgo===0?'today':daysAgo+'d ago'}{stale?' · stale':''})</span>}
-                          </span>
-                        </div>
-                      )
-                    })()}
                     {SI('Model Number','model_number',localForm,setLocalForm)}
                     {SI('Manufacturer','manufacturer',localForm,setLocalForm)}
                     {SI('Year Installed','year_installed',localForm,setLocalForm)}
@@ -1719,6 +1734,26 @@ export default function Home() {
                   Visiting as <span style={{fontWeight:'700',color:'#475569'}}>{userName||'Unknown user'}</span> · {new Date().toLocaleDateString()}
                 </div>
                 <textarea value={visitNote} onChange={e=>setVisitNote(e.target.value)} placeholder='Visit notes (optional)...' style={{width:'100%',padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',minHeight:'56px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'6px'}}/>
+                {/* Attach files/reports as part of the visit entry */}
+                <label style={{display:'block',padding:'7px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'11px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
+                  + Attach Report / Document / Photo
+                  <input type='file' multiple style={{display:'none'}} onChange={e=>{
+                    const files = Array.from(e.target.files||[])
+                    if(files.length) setPendingVisitFiles(prev=>[...prev,...files])
+                    e.target.value=''
+                  }}/>
+                </label>
+                {pendingVisitFiles.length>0 && (
+                  <div style={{marginBottom:'6px'}}>
+                    {pendingVisitFiles.map((f,i)=>(
+                      <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 8px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:'5px',marginBottom:'3px'}}>
+                        <span style={{fontSize:'10px',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'200px'}}>{f.name}</span>
+                        <button onClick={()=>setPendingVisitFiles(prev=>prev.filter((_,idx)=>idx!==i))} style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:'12px',lineHeight:1}}>×</button>
+                      </div>
+                    ))}
+                    <div style={{fontSize:'9px',color:'#94a3b8'}}>{pendingVisitFiles.length} file{pendingVisitFiles.length===1?'':'s'} will upload when you log the visit.</div>
+                  </div>
+                )}
                 <button onClick={saveSiteVisit} disabled={savingVisit} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>
                   {savingVisit?'Saving...':'Log Visit'}
                 </button>
