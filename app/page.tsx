@@ -2029,11 +2029,10 @@ export default function Home() {
       {/* ── Header ── */}
       <div style={{background:'#0f172a',padding:isMobile?'12px 16px':'14px 24px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
-          <div style={{width:'36px',height:'36px',background:'#3b82f6',borderRadius:'8px',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'18px'}}>🏢</div>
-          <div>
-            <div style={{color:'#f8fafc',fontWeight:'600',fontSize:isMobile?'14px':'15px'}}>Professional Equity Management</div>
-            <div style={{color:'#64748b',fontSize:'11px'}}>Portfolio Systems Dashboard</div>
+          <div style={{background:'#ffffff',borderRadius:'8px',padding:isMobile?'5px 8px':'6px 10px',display:'flex',alignItems:'center'}}>
+            <img src='/pem-logo.png' alt='PEM' style={{height:isMobile?'22px':'26px',width:'auto',display:'block'}}/>
           </div>
+          <div style={{color:'#f8fafc',fontWeight:'600',fontSize:isMobile?'13px':'15px'}}>Portfolio Systems Dashboard</div>
         </div>
         {/* Right side: user name/role + Sign Out */}
         <div style={{display:'flex',alignItems:'center',gap:isMobile?'10px':'14px'}}>
