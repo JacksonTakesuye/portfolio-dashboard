@@ -164,9 +164,10 @@ export default function Home() {
   const [fileViewer,    setFileViewer]     = useState<{url:string,name:string}|null>(null)
   const [tab,           setTab]            = useState('all')
   // ─── Filter state (Filter Type → State or RM Region) ───
-  const [filterType,    setFilterType]     = useState<'state'|'rm'>('state')
+  const [filterType,    setFilterType]     = useState<'state'|'rm'|'rsm'>('state')
   const [stateFilter,   setStateFilter]    = useState('all')
   const [rmFilter,      setRmFilter]       = useState('all')
+  const [rsmFilter,     setRsmFilter]      = useState('all')
   const [modal,         setModal]          = useState<any>(null)
   const [form,          setForm]           = useState({status:'in-service',reason:'',notes:'',reportedBy:''})
   const [saving,        setSaving]         = useState(false)
@@ -877,6 +878,7 @@ export default function Home() {
   const states = [...new Set(properties.map((p:any)=>p.state))].sort()
   // Unique RMs present in the portfolio (skip blanks), sorted alphabetically
   const rms = [...new Set(properties.map((p:any)=>p.rm).filter(Boolean))].sort()
+  const rsms = [...new Set(properties.map((p:any)=>p.rsm).filter(Boolean))].sort()
   // Team Members see only their assigned properties; everyone else sees all.
   const visibleProperties = isTeamMember ? properties.filter((p:any)=>myProps.includes(p.id)) : properties
   const filtered = visibleProperties.filter((p:any)=>{
@@ -884,7 +886,9 @@ export default function Home() {
     // State and RM filters are independent — whichever filter type is active is the one applied.
     const filterOk = filterType==='state'
       ? (stateFilter==='all' || p.state===stateFilter)
-      : (rmFilter==='all'    || p.rm===rmFilter)
+      : filterType==='rm'
+        ? (rmFilter==='all'  || p.rm===rmFilter)
+        : (rsmFilter==='all' || p.rsm===rsmFilter)
     return tabOk && filterOk
   })
   const byState = states.map(s=>({state:s, props:filtered.filter((p:any)=>p.state===s)})).filter(g=>g.props.length>0)
@@ -2085,16 +2089,18 @@ export default function Home() {
               <select
                 value={filterType}
                 onChange={e=>{
-                  const v = e.target.value as 'state'|'rm'
+                  const v = e.target.value as 'state'|'rm'|'rsm'
                   setFilterType(v)
-                  // Reset the value selection so a stale filter from the other type isn't applied
+                  // Reset all value selections so a stale filter from another type isn't applied
                   setStateFilter('all')
                   setRmFilter('all')
+                  setRsmFilter('all')
                 }}
                 style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer'}}
               >
                 <option value='state'>State</option>
                 <option value='rm'>RM Region</option>
+                <option value='rsm'>RSM Region</option>
               </select>
             </div>
 
@@ -2108,7 +2114,7 @@ export default function Home() {
                 <option value='all'>All States</option>
                 {states.map(s=><option key={s} value={s}>{abbr(s)} — {s}</option>)}
               </select>
-            ) : (
+            ) : filterType==='rm' ? (
               <select
                 value={rmFilter}
                 onChange={e=>setRmFilter(e.target.value)}
@@ -2116,6 +2122,15 @@ export default function Home() {
               >
                 <option value='all'>All RM Regions</option>
                 {rms.map(r=><option key={r} value={r}>{r}</option>)}
+              </select>
+            ) : (
+              <select
+                value={rsmFilter}
+                onChange={e=>setRsmFilter(e.target.value)}
+                style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer',minWidth:'160px'}}
+              >
+                <option value='all'>All RSM Regions</option>
+                {rsms.map(r=><option key={r} value={r}>{r}</option>)}
               </select>
             )}
           </div>
