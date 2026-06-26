@@ -187,6 +187,13 @@ export default function Home() {
   // shape: {kind, label, run:()=>Promise<void>}
   const [pendingDelete, setPendingDelete] = useState<any>(null)
   const [deleting,      setDeleting]      = useState(false)
+  // ─── Site Visits ───
+  const [siteVisits,    setSiteVisits]    = useState<Record<string,any[]>>({})
+  const [siteVisitDocs, setSiteVisitDocs] = useState<Record<number,any[]>>({})
+  const [visitNote,     setVisitNote]     = useState('')
+  const [savingVisit,   setSavingVisit]   = useState(false)
+  const [uploadingVisitDoc, setUploadingVisitDoc] = useState<number|null>(null)
+  const [expandedVisit, setExpandedVisit] = useState<number|null>(null)
   // ─── Role / access state (Phase C) ───
   const [userRole,      setUserRole]       = useState<string|null>(null)
   const [myProps,       setMyProps]        = useState<string[]>([])
@@ -240,6 +247,8 @@ export default function Home() {
       const {data:eclogs}           = await supabase.from('event_cost_log').select('*').order('created_at',{ascending:false})
       const {data:edocs}            = await supabase.from('event_documents').select('*').order('created_at',{ascending:false})
       const {data:evendors}         = await supabase.from('event_vendors').select('*').order('created_at',{ascending:true})
+      const {data:svisits}          = await supabase.from('site_visits').select('*').order('visit_date',{ascending:false})
+      const {data:svdocs}           = await supabase.from('site_visit_documents').select('*').order('created_at',{ascending:false})
       if(e1) setError(e1.message)
       else if(e2) setError(e2.message)
       else {
@@ -284,6 +293,13 @@ export default function Home() {
         const evm:Record<number,any[]>={}
         ;(evendors||[]).forEach((v:any)=>{ (evm[v.status_update_id] = evm[v.status_update_id]||[]).push(v) })
         setEventVendors(evm)
+        // Site visits grouped by property (newest first); docs grouped by visit
+        const svm:Record<string,any[]>={}
+        ;(svisits||[]).forEach((v:any)=>{ (svm[v.property_id] = svm[v.property_id]||[]).push(v) })
+        setSiteVisits(svm)
+        const svdm:Record<number,any[]>={}
+        ;(svdocs||[]).forEach((d:any)=>{ (svdm[d.site_visit_id] = svdm[d.site_visit_id]||[]).push(d) })
+        setSiteVisitDocs(svdm)
       }
       setLoading(false)
     }
@@ -319,6 +335,57 @@ export default function Home() {
     return myProps.includes(propId)
   }
   const isTeamMember = userRole==='team_member'
+  // Only RM, RSM, and admin may log site visits
+  const canEditVisits = userRole==='rm' || userRole==='rsm' || userRole==='admin'
+
+  // Days since the most recent visit to a property (null if never visited)
+  const daysSinceVisit = (propId:string) => {
+    const visits = siteVisits[propId]||[]
+    if(visits.length===0) return null
+    const latest = visits.reduce((a:any,b:any)=> new Date(a.visit_date)>new Date(b.visit_date)?a:b)
+    return Math.floor((Date.now()-new Date(latest.visit_date).getTime())/86400000)
+  }
+
+  const saveSiteVisit = async () => {
+    if(!detailProp || !canEditVisits) return
+    setSavingVisit(true)
+    const today = new Date().toISOString().split('T')[0]
+    const {data, error} = await supabase.from('site_visits')
+      .insert({property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null})
+      .select()
+    if(error){ showToast('Error: '+error.message); setSavingVisit(false); return }
+    const inserted = (data&&data[0]) || {property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null, created_at:new Date().toISOString()}
+    setSiteVisits((prev:any)=>({...prev,[detailProp.id]:[inserted,...(prev[detailProp.id]||[])]}))
+    setVisitNote('')
+    showToast('Site visit logged')
+    setSavingVisit(false)
+  }
+
+  const uploadVisitDoc = async (visit:any, file:File) => {
+    if(!detailProp) return
+    setUploadingVisitDoc(visit.id)
+    const path = 'site-visit-'+visit.id+'/'+Date.now()+'-'+file.name
+    const {error:upErr} = await supabase.storage.from('documents').upload(path,file)
+    if(upErr){ showToast('Upload error: '+upErr.message); setUploadingVisitDoc(null); return }
+    const {data, error:dbErr} = await supabase.from('site_visit_documents')
+      .insert({site_visit_id:visit.id, property_id:detailProp.id, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:actor()})
+      .select()
+    if(dbErr){ showToast('DB error: '+dbErr.message); setUploadingVisitDoc(null); return }
+    const inserted = (data&&data[0]) || {site_visit_id:visit.id, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:actor(), created_at:new Date().toISOString()}
+    setSiteVisitDocs((prev:any)=>({...prev,[visit.id]:[inserted,...(prev[visit.id]||[])]}))
+    showToast('File uploaded')
+    setUploadingVisitDoc(null)
+  }
+
+  const deleteSiteVisit = async (visit:any) => {
+    const docs = siteVisitDocs[visit.id]||[]
+    for(const d of docs){ if(d.file_path) await supabase.storage.from('documents').remove([d.file_path]) }
+    await supabase.from('site_visit_documents').delete().eq('site_visit_id',visit.id)
+    const {error} = await supabase.from('site_visits').delete().eq('id',visit.id)
+    if(error) throw error
+    setSiteVisits((prev:any)=>({...prev,[visit.property_id]:(prev[visit.property_id]||[]).filter((v:any)=>v.id!==visit.id)}))
+    showToast('Site visit deleted')
+  }
 
   const openModal = (sys:any) => {
     const current = statuses[sys.id]
@@ -800,7 +867,7 @@ export default function Home() {
     : alertLog.filter((a:any)=> a.property_id ? myProps.includes(a.property_id) : false)
 
   const TABS        = [['all','All'],['elevators','Elevators'],['compactors','Compactors'],['pools','Pools'],['gates','Gates']]
-  const DETAIL_TABS = [['systems','Systems'],['psr','PSR Report'],['sysinfo','System Info'],['documents','Documents']]
+  const DETAIL_TABS = [['systems','Systems'],['psr','PSR Report'],['sysinfo','System Info'],['documents','Documents'],['visits','Site Visits']]
 
   if(loading) return <div style={{padding:'40px',textAlign:'center'}}>Loading...</div>
   if(error)   return <div style={{padding:'40px',color:'red'}}>Error: {error}</div>
@@ -1508,6 +1575,32 @@ export default function Home() {
                 return (
                   <div key={sys.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',marginBottom:'12px',background:'#fafafa'}}>
                     <div style={{fontWeight:'600',fontSize:'13px',marginBottom:'8px'}}>{sys.name}</div>
+                    {(()=>{
+                      // "Last Updated" only shows for systems currently out-of-service or in maintenance.
+                      const curStatus = statuses[sys.id]?.status||'in-service'
+                      if(curStatus!=='out-of-service' && curStatus!=='maintenance') return null
+                      // Most recent activity touching this system's current outage: status event, its cost edit, or latest note.
+                      const candidates:number[] = []
+                      const stTs = statuses[sys.id]?.created_at; if(stTs) candidates.push(new Date(stTs).getTime())
+                      const evId = statuses[sys.id]?.id
+                      const cost = evId?eventCosts[evId]:null
+                      if(cost?.last_edited_at) candidates.push(new Date(cost.last_edited_at).getTime())
+                      const notes = systemNotes[sys.id]||[]
+                      if(notes[0]?.created_at) candidates.push(new Date(notes[0].created_at).getTime())
+                      const latest = candidates.length?Math.max(...candidates):null
+                      const meta = STATUS_META[curStatus]
+                      const daysAgo = latest!==null?Math.floor((Date.now()-latest)/86400000):null
+                      const stale = daysAgo!==null && daysAgo>7
+                      return (
+                        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',padding:'6px 8px',background:meta.bg,border:'1px solid '+meta.border,borderRadius:'6px'}}>
+                          <span style={{fontSize:'10px',fontWeight:'700',color:meta.color}}>{meta.label}</span>
+                          <span style={{fontSize:'10px',color:'#64748b'}}>
+                            · Last updated {latest!==null?fmtDateTime(new Date(latest).toISOString()):'—'}
+                            {daysAgo!==null && <span style={{color:stale?'#dc2626':'#64748b',fontWeight:stale?'700':'400'}}> ({daysAgo===0?'today':daysAgo+'d ago'}{stale?' · stale':''})</span>}
+                          </span>
+                        </div>
+                      )
+                    })()}
                     {SI('Model Number','model_number',localForm,setLocalForm)}
                     {SI('Manufacturer','manufacturer',localForm,setLocalForm)}
                     {SI('Year Installed','year_installed',localForm,setLocalForm)}
@@ -1597,6 +1690,95 @@ export default function Home() {
           {renderDocBucket('property','Property-Wide Documents','Not tied to a specific system', editable)}
         </div>
       )}
+
+      {/* Site Visits tab */}
+      {detailTab==='visits' && (()=>{
+        const visits = detailProp ? (siteVisits[detailProp.id]||[]) : []
+        const days = detailProp ? daysSinceVisit(detailProp.id) : null
+        const overdue = days!==null && days>30
+        return (
+          <div>
+            {/* Days since last visit banner */}
+            <div style={{marginBottom:'14px',padding:'12px',borderRadius:'10px',textAlign:'center',
+              background: days===null?'#f1f5f9':(overdue?'#fef2f2':'#f0fdf4'),
+              border:'1px solid '+(days===null?'#e2e8f0':(overdue?'#fecaca':'#bbf7d0'))}}>
+              <div style={{fontSize:'24px',fontWeight:'700',color:days===null?'#64748b':(overdue?'#dc2626':'#16a34a')}}>
+                {days===null?'—':days}
+              </div>
+              <div style={{fontSize:'11px',color:'#64748b',marginTop:'2px'}}>
+                {days===null?'No visits logged yet':'day'+(days===1?'':'s')+' since last visit'}
+                {overdue && <span style={{color:'#dc2626',fontWeight:'600'}}> · overdue (30+ days)</span>}
+              </div>
+            </div>
+
+            {/* Add a visit — RM / RSM / admin only */}
+            {canEditVisits ? (
+              <div style={{background:'#f8fafc',borderRadius:'8px',padding:'12px',marginBottom:'14px'}}>
+                <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'8px'}}>Log a Site Visit</div>
+                <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'6px'}}>
+                  Visiting as <span style={{fontWeight:'700',color:'#475569'}}>{userName||'Unknown user'}</span> · {new Date().toLocaleDateString()}
+                </div>
+                <textarea value={visitNote} onChange={e=>setVisitNote(e.target.value)} placeholder='Visit notes (optional)...' style={{width:'100%',padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',minHeight:'56px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'6px'}}/>
+                <button onClick={saveSiteVisit} disabled={savingVisit} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>
+                  {savingVisit?'Saving...':'Log Visit'}
+                </button>
+              </div>
+            ) : (
+              <div style={{marginBottom:'14px',padding:'8px 10px',background:'#fef9c3',border:'1px solid #fde68a',borderRadius:'7px',fontSize:'11px',color:'#92400e',fontWeight:'600'}}>
+                View only — site visits can be logged by Regional Managers and Regional Service Managers.
+              </div>
+            )}
+
+            {/* Visit history */}
+            <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'8px'}}>Visit History {visits.length>0?'('+visits.length+')':''}</div>
+            {visits.length===0
+              ? <div style={{fontSize:'12px',color:'#94a3b8',textAlign:'center',padding:'16px'}}>No site visits logged yet.</div>
+              : visits.map((v:any)=>{
+                  const vdocs = siteVisitDocs[v.id]||[]
+                  const open = expandedVisit===v.id
+                  return (
+                    <div key={v.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',marginBottom:'8px',overflow:'hidden',background:'#fff'}}>
+                      <div onClick={()=>setExpandedVisit(open?null:v.id)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',background:'#f8fafc'}}>
+                        <div>
+                          <div style={{fontWeight:'600',fontSize:'12px',color:'#1e293b'}}>{v.visit_date}</div>
+                          <div style={{fontSize:'11px',color:'#94a3b8',marginTop:'2px'}}>by {v.visitor||'—'}</div>
+                        </div>
+                        <span style={{fontSize:'12px',color:'#94a3b8'}}>{open?'▲':'▼'}</span>
+                      </div>
+                      {open && (
+                        <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0'}}>
+                          {v.notes && <div style={{fontSize:'12px',color:'#1e293b',whiteSpace:'pre-wrap',marginBottom:'8px'}}>{v.notes}</div>}
+                          {!v.notes && <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'8px',fontStyle:'italic'}}>No notes.</div>}
+
+                          {/* Visit documents */}
+                          {vdocs.map((d:any,di:number)=>(
+                            <div key={d.id||di} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'5px 8px',background:'#f8fafc',borderRadius:'5px',marginBottom:'4px'}}>
+                              <span style={{fontSize:'11px',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'180px'}}>{d.file_name}</span>
+                              <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                                <button onClick={()=>viewDocument(d.file_path)} style={{padding:'3px 8px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>View</button>
+                              </div>
+                            </div>
+                          ))}
+
+                          {/* Upload + delete (editors only) */}
+                          {canEditVisits && (
+                            <div style={{display:'flex',gap:'6px',marginTop:'6px',alignItems:'center'}}>
+                              <label style={{flex:1,display:'block',padding:'6px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',textAlign:'center',cursor:'pointer'}}>
+                                {uploadingVisitDoc===v.id?'Uploading...':'+ Add Document / Photo'}
+                                <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadVisitDoc(v,f); e.target.value=''}}/>
+                              </label>
+                              {userRole==='admin' && <button onClick={()=>askDelete('Delete the site visit from '+v.visit_date+' by '+(v.visitor||'—')+'? This also removes its documents. This cannot be undone.', ()=>deleteSiteVisit(v))} title='Delete (admin)' style={{padding:'6px 10px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>🗑️</button>}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+            }
+          </div>
+        )
+      })()}
     </>
   )
   }
