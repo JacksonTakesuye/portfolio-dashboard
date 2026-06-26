@@ -160,6 +160,8 @@ export default function Home() {
   const [pendingPsrPhotos, setPendingPsrPhotos] = useState<Record<string,{file:File,url:string}[]>>({})
   const [uploadingPsrPhoto, setUploadingPsrPhoto] = useState<string|null>(null)
   const [photoViewer,   setPhotoViewer]    = useState<string|null>(null)
+  // File viewer modal: holds the signed url + file name of the file being viewed
+  const [fileViewer,    setFileViewer]     = useState<{url:string,name:string}|null>(null)
   const [tab,           setTab]            = useState('all')
   // ─── Filter state (Filter Type → State or RM Region) ───
   const [filterType,    setFilterType]     = useState<'state'|'rm'>('state')
@@ -839,18 +841,30 @@ export default function Home() {
     const path = detailProp.id+'/'+bucketKey+'/'+Date.now()+'-'+file.name
     const {error:upErr} = await supabase.storage.from('documents').upload(path,file)
     if(upErr){ showToast('Upload error: '+upErr.message); setUploading(null); return }
-    const row = {property_id:detailProp.id, system_id:systemId, doc_type:docType, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:'Staff'}
-    const {error:dbErr} = await supabase.from('documents').insert(row)
+    const row = {property_id:detailProp.id, system_id:systemId, doc_type:docType, file_name:file.name, file_path:path, file_size:file.size, uploaded_by:actor()}
+    const {data:docData, error:dbErr} = await supabase.from('documents').insert(row).select()
     if(dbErr){ showToast('DB error: '+dbErr.message); setUploading(null); return }
     showToast('Document uploaded')
-    setDocuments((prev:any)=>[...prev,{...row,created_at:new Date().toISOString()}])
+    const insertedDoc = (docData&&docData[0]) || {...row, created_at:new Date().toISOString()}
+    setDocuments((prev:any)=>[...prev,insertedDoc])
     setUploading(null)
   }
 
   const viewDocument = async (path:string) => {
-    const {data} = await supabase.storage.from('documents').createSignedUrl(path,60)
-    if(data?.signedUrl) window.open(data.signedUrl,'_blank')
+    // Longer expiry so the embedded viewer has time to load
+    const {data} = await supabase.storage.from('documents').createSignedUrl(path,3600)
+    if(data?.signedUrl){
+      // Derive a display name from the stored path (strip folders + timestamp prefix)
+      const raw = path.split('/').pop() || 'file'
+      const name = raw.replace(/^\d+-/, '')
+      setFileViewer({url:data.signedUrl, name})
+    }
   }
+
+  // File-type helpers for the viewer
+  const fileExt = (name:string) => (name.split('.').pop()||'').toLowerCase()
+  const isImageFile = (name:string) => ['jpg','jpeg','png','gif','webp','bmp','svg','heic'].includes(fileExt(name))
+  const isPdfFile   = (name:string) => fileExt(name)==='pdf'
 
   const handleDrop = (e:React.DragEvent, bucketKey:string) => {
     e.preventDefault()
@@ -1090,8 +1104,8 @@ export default function Home() {
                         })()}
                       </div>
                     </div>
-                    {st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
-                    {st?.notes  && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
+                    {(statusKey==='out-of-service'||statusKey==='maintenance') && st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
+                    {(statusKey==='out-of-service'||statusKey==='maintenance') && st?.notes && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
                     {editable && <button onClick={()=>openModal(sys)} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>Update Status</button>}
 
                     {/* ── Status history (traceability) ── */}
@@ -2343,6 +2357,36 @@ export default function Home() {
 
       {/* ── Systems Out full view ── */}
       {systemsOutOpen && renderSystemsOut()}
+
+      {/* ── File viewer modal (in-screen) ── */}
+      {fileViewer && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:550,padding:isMobile?'8px':'24px'}} onClick={()=>setFileViewer(null)}>
+          <div onClick={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:'12px',width:'100%',maxWidth:'900px',height:'90vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+            {/* Header with controls */}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',borderBottom:'1px solid #e2e8f0',gap:'10px'}}>
+              <div style={{fontSize:'13px',fontWeight:'700',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{fileViewer.name}</div>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',flexShrink:0}}>
+                <a href={fileViewer.url} download={fileViewer.name} style={{padding:'6px 12px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'12px',fontWeight:'600',textDecoration:'none'}}>Download</a>
+                <a href={fileViewer.url} target='_blank' rel='noopener noreferrer' style={{padding:'6px 12px',background:'#f1f5f9',color:'#475569',borderRadius:'6px',fontSize:'12px',fontWeight:'600',textDecoration:'none'}}>Open in New Tab</a>
+                <button onClick={()=>setFileViewer(null)} style={{background:'none',border:'none',cursor:'pointer',fontSize:'22px',color:'#94a3b8',lineHeight:1,padding:'0 4px'}}>×</button>
+              </div>
+            </div>
+            {/* Body — embed images/PDFs; fall back for other types */}
+            <div style={{flex:1,overflow:'auto',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              {isImageFile(fileViewer.name)
+                ? <img src={fileViewer.url} alt={fileViewer.name} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain' as any}}/>
+                : isPdfFile(fileViewer.name)
+                  ? <iframe src={fileViewer.url} title={fileViewer.name} style={{width:'100%',height:'100%',border:'none'}}/>
+                  : <div style={{textAlign:'center',padding:'40px',color:'#64748b'}}>
+                      <div style={{fontSize:'40px',marginBottom:'12px'}}>📄</div>
+                      <div style={{fontSize:'14px',fontWeight:'600',color:'#1e293b',marginBottom:'6px'}}>Preview not available for this file type</div>
+                      <div style={{fontSize:'12px',marginBottom:'16px'}}>Use Download or Open in New Tab to view it.</div>
+                    </div>
+              }
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Photo viewer (full size) ── */}
       {photoViewer && (
