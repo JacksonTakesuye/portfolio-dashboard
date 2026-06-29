@@ -203,6 +203,8 @@ export default function Home() {
   const [myProps,       setMyProps]        = useState<string[]>([])
   const [userName,      setUserName]       = useState<string>('')
   const [signingOut,    setSigningOut]     = useState(false)
+  const [notifStatus,   setNotifStatus]    = useState<'unsupported'|'default'|'granted'|'denied'>('default')
+  const [enablingNotif, setEnablingNotif]  = useState(false)
   const fileInputRefs = useRef<Record<string,HTMLInputElement|null>>({})
 
   // ─── Detect mobile ───────────────────────────────────────────────────────────
@@ -311,29 +313,51 @@ export default function Home() {
   },[])
 
   // ─── Service worker / push ────────────────────────────────────────────────────
-  useEffect(()=>{
-    if('serviceWorker' in navigator && 'PushManager' in window){
-      navigator.serviceWorker.register('/sw.js').then(async(reg)=>{
-        const permission = await Notification.requestPermission()
-        if(permission !== 'granted') return
-        const existing = await reg.pushManager.getSubscription()
-        const sub = existing || await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY})
-        // Identify who this device belongs to so the server can route alerts by property.
-        // We re-read this on every load so role/assignment changes stay current.
-        const {data:{user}} = await supabase.auth.getUser()
-        let subRole:string|null = null
-        let subAssigned:string[] = []
-        if(user){
-          const {data:acc} = await supabase.from('user_access').select('role,assigned_property_ids').eq('user_id',user.id).single()
-          if(acc){
-            subRole = acc.role || null
-            subAssigned = Array.isArray(acc.assigned_property_ids) ? acc.assigned_property_ids : []
-          }
-        }
-        await fetch('/api/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub, userId:user?.id||null, role:subRole, assignedPropertyIds:subAssigned})})
-      }).catch(err=>console.log('SW error:',err))
+  // Registers this device for push and records who it belongs to, so the server can
+  // route alerts by role/property. ask=false: only (re)subscribe if permission was
+  // already granted (silent refresh on load). ask=true: prompt the user — this must be
+  // triggered by a tap (the Enable Notifications button), which is what iOS requires.
+  const registerPush = async (ask:boolean) => {
+    if(typeof window==='undefined' || !('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification==='undefined'){
+      setNotifStatus('unsupported'); return
     }
-  },[])
+    try{
+      const reg = await navigator.serviceWorker.register('/sw.js')
+      let permission = Notification.permission
+      if(ask && permission!=='granted') permission = await Notification.requestPermission()
+      setNotifStatus(permission as any)
+      if(permission!=='granted') return
+      const existing = await reg.pushManager.getSubscription()
+      const sub = existing || await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY})
+      // Identify who this device belongs to so the server can route alerts by property.
+      // We re-read this on every load so role/assignment changes stay current.
+      const {data:{user}} = await supabase.auth.getUser()
+      let subRole:string|null = null
+      let subAssigned:string[] = []
+      if(user){
+        const {data:acc} = await supabase.from('user_access').select('role,assigned_property_ids').eq('user_id',user.id).single()
+        if(acc){
+          subRole = acc.role || null
+          subAssigned = Array.isArray(acc.assigned_property_ids) ? acc.assigned_property_ids : []
+        }
+      }
+      await fetch('/api/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub, userId:user?.id||null, role:subRole, assignedPropertyIds:subAssigned})})
+    }catch(err){ console.log('Push registration error:',err) }
+  }
+
+  // Triggered by the Enable Notifications button (a user tap — required by iOS)
+  const handleEnableNotifications = async () => {
+    setEnablingNotif(true)
+    await registerPush(true)
+    setEnablingNotif(false)
+    if(typeof Notification!=='undefined'){
+      if(Notification.permission==='granted') showToast('Notifications enabled')
+      else if(Notification.permission==='denied') showToast('Notifications are blocked — turn them on in your device or browser settings')
+    }
+  }
+
+  // On load, silently refresh the subscription if permission was already granted.
+  useEffect(()=>{ registerPush(false) },[])
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),3000) }
@@ -2054,6 +2078,16 @@ export default function Home() {
               <div style={{color:'#64748b',fontSize:'10px'}}>{ROLE_LABELS[userRole]||userRole}</div>
             </div>
           )}
+          {!isMobile && notifStatus!=='granted' && notifStatus!=='unsupported' && (
+            <button
+              onClick={handleEnableNotifications}
+              disabled={enablingNotif}
+              title='Turn on alerts for this device'
+              style={{background:'#3b82f6',color:'#fff',border:'none',borderRadius:'7px',padding:'7px 14px',fontSize:'12px',fontWeight:'600',cursor:enablingNotif?'default':'pointer',whiteSpace:'nowrap' as any}}
+            >
+              {enablingNotif?'Enabling...':'🔔 Enable Notifications'}
+            </button>
+          )}
           <button
             onClick={handleSignOut}
             disabled={signingOut}
@@ -2188,13 +2222,34 @@ export default function Home() {
         {/* ── Alerts screen (mobile only) ── */}
         {isMobile && mobileTab==='alerts' && renderAlerts()}
 
-        {/* ── Settings placeholder (mobile only) ── */}
+        {/* ── Settings (mobile only) ── */}
         {isMobile && mobileTab==='settings' && (
-          <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:'40px',paddingBottom:'80px'}}>
-            <div style={{textAlign:'center'}}>
-              <div style={{fontSize:'32px',marginBottom:'12px'}}>⚙️</div>
-              <div style={{fontWeight:'600',fontSize:'14px',color:'#1e293b',marginBottom:'6px'}}>Settings</div>
-              <div style={{fontSize:'12px',color:'#94a3b8'}}>Coming soon</div>
+          <div style={{flex:1,padding:'16px',paddingBottom:'80px'}}>
+            <div style={{fontWeight:'700',fontSize:'15px',color:'#1e293b',marginBottom:'14px'}}>Settings</div>
+            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'16px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+                <span style={{fontSize:'18px'}}>🔔</span>
+                <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>Notifications</div>
+                {notifStatus==='granted' && <span style={{marginLeft:'auto',background:'#f0fdf4',color:'#16a34a',border:'1px solid #bbf7d0',fontSize:'10px',fontWeight:'700',padding:'2px 8px',borderRadius:'10px'}}>On</span>}
+              </div>
+              <div style={{fontSize:'12px',color:'#64748b',lineHeight:1.5,marginBottom:'12px'}}>
+                {notifStatus==='granted'
+                  ? 'Notifications are on for this device. You\u2019ll receive alerts for your assigned properties.'
+                  : notifStatus==='denied'
+                    ? 'Notifications are blocked for this app. To turn them on, open your iPhone Settings \u2192 Notifications \u2192 PEM Dashboard and allow them, then come back and tap below.'
+                    : notifStatus==='unsupported'
+                      ? 'To get notifications on iPhone, first add this app to your home screen (Share \u2192 Add to Home Screen) and open it from that icon, then return here.'
+                      : 'Turn on notifications to get alerts for your properties on this device.'}
+              </div>
+              {notifStatus!=='granted' && notifStatus!=='unsupported' && (
+                <button
+                  onClick={handleEnableNotifications}
+                  disabled={enablingNotif}
+                  style={{width:'100%',padding:'10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:enablingNotif?'default':'pointer'}}
+                >
+                  {enablingNotif?'Enabling...':'Enable Notifications'}
+                </button>
+              )}
             </div>
           </div>
         )}
