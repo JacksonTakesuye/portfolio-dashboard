@@ -318,7 +318,19 @@ export default function Home() {
         if(permission !== 'granted') return
         const existing = await reg.pushManager.getSubscription()
         const sub = existing || await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY})
-        await fetch('/api/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub})})
+        // Identify who this device belongs to so the server can route alerts by property.
+        // We re-read this on every load so role/assignment changes stay current.
+        const {data:{user}} = await supabase.auth.getUser()
+        let subRole:string|null = null
+        let subAssigned:string[] = []
+        if(user){
+          const {data:acc} = await supabase.from('user_access').select('role,assigned_property_ids').eq('user_id',user.id).single()
+          if(acc){
+            subRole = acc.role || null
+            subAssigned = Array.isArray(acc.assigned_property_ids) ? acc.assigned_property_ids : []
+          }
+        }
+        await fetch('/api/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:sub, userId:user?.id||null, role:subRole, assignedPropertyIds:subAssigned})})
       }).catch(err=>console.log('SW error:',err))
     }
   },[])

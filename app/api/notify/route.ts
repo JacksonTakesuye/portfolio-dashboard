@@ -49,16 +49,34 @@ export async function POST(request: Request) {
     report_date:   reportDate   || null,
   })
 
-  const { data: subscriptions } = await supabase.from('push_subscriptions').select('subscription')
+  const { data: subscriptions } = await supabase
+    .from('push_subscriptions')
+    .select('subscription, role, assigned_property_ids')
 
   if (!subscriptions || subscriptions.length === 0) {
     return NextResponse.json({ message: 'No subscribers' })
   }
 
+  // ── Property-based routing ──
+  // Admins receive every alert. Everyone else receives an alert only if the
+  // affected property is in their assigned_property_ids (this covers RMs/RSMs,
+  // whose managed properties live in that same list). If an event somehow has
+  // no propertyId, fall back to notifying everyone so nothing is silently dropped.
+  const recipients = subscriptions.filter((row: any) => {
+    if (row.role === 'admin') return true
+    if (!propertyId) return true
+    const assigned = Array.isArray(row.assigned_property_ids) ? row.assigned_property_ids : []
+    return assigned.includes(propertyId)
+  })
+
+  if (recipients.length === 0) {
+    return NextResponse.json({ message: 'No matching subscribers for this property' })
+  }
+
   const payload = JSON.stringify({ title, body })
   const results = await Promise.allSettled(
-    subscriptions.map((row: any) => webpush.sendNotification(row.subscription, payload))
+    recipients.map((row: any) => webpush.sendNotification(row.subscription, payload))
   )
 
-  return NextResponse.json({ sent: results.length })
+  return NextResponse.json({ sent: results.length, matched: recipients.length, total: subscriptions.length })
 }
