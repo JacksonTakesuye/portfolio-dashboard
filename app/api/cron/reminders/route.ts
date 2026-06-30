@@ -46,6 +46,29 @@ async function send(subs: Sub[], title: string, body: string) {
   return results.filter((r) => r.status === 'fulfilled').length
 }
 
+// Send email via Resend. No-op (returns 0) until RESEND_API_KEY is configured in Vercel.
+async function sendEmail(to: (string | null)[], subject: string, html: string) {
+  const key = process.env.RESEND_API_KEY
+  const recipients = to.filter(Boolean) as string[]
+  if (!key || recipients.length === 0) return 0
+  const from = process.env.ALERT_EMAIL_FROM || 'PEM Dashboard <alerts@proequitymgmt.com>'
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to: recipients, subject, html }),
+    })
+    return res.ok ? recipients.length : 0
+  } catch {
+    return 0
+  }
+}
+
+// Write an entry to the in-app Alerts feed.
+async function logAlert(type: string, propertyId: string, propertyName: string, reason: string) {
+  await supabase.from('alert_log').insert({ type, property_id: propertyId, property_name: propertyName, reason })
+}
+
 async function alreadyReminded(propertyId: string, type: string, withinDays: number) {
   const cutoff = new Date(Date.now() - withinDays * 86400000).toISOString()
   const { data } = await supabase
@@ -83,15 +106,18 @@ export async function GET(request: Request) {
   const dow = az.getUTCDay() // 0=Sun..6=Sat in Arizona time
   const weekMonday = azWeekMonday(az)
 
-  const [{ data: props }, { data: subs }] = await Promise.all([
-    supabase.from('properties').select('id, name'),
+  const [{ data: props }, { data: subs }, { data: profs }] = await Promise.all([
+    supabase.from('properties').select('id, name, rm, rsm'),
     supabase.from('push_subscriptions').select('subscription, role, assigned_property_ids'),
+    supabase.from('user_profiles').select('full_name, email, role'),
   ])
   const properties: any[] = props || []
   const subscriptions: Sub[] = (subs || []) as Sub[]
+  const profiles: any[] = profs || []
+  const emailOf = (fullName: string) => profiles.find((u) => u.full_name === fullName)?.email || null
   const nameOf = (id: string) => properties.find((p) => p.id === id)?.name || id
 
-  const summary = { psrReminders: 0, psrSent: 0, visitReminders: 0, visitSent: 0 }
+  const summary = { psrReminders: 0, psrSent: 0, visitReminders: 0, visitSent: 0, health3: 0, health3Sent: 0, health5: 0, health5Sent: 0, health5Emails: 0 }
 
   // ── 1. PSR reminders ──────────────────────────────────────────────────────
   // Tuesday (dow 2) → chase Monday-due reports. Wednesday (dow 3) → chase Tuesday-due.
@@ -165,6 +191,56 @@ export async function GET(request: Request) {
       summary.visitSent += await send(targets, title, body)
     }
     await logReminder(p.id, 'site-visit')
+  }
+
+  // ── 3. Systems Healthy reminders ──────────────────────────────────────────
+  // 3+ days since a property's last "Systems Healthy" confirmation → nudge CM/SM (in-app + push).
+  // 5+ days → escalate to the property's RM/RSM (in-app + push + email).
+  const { data: confs } = await supabase
+    .from('health_confirmations')
+    .select('property_id, confirmed_at')
+
+  const latestConf: Record<string, string> = {}
+  for (const c of confs || []) {
+    if (!latestConf[c.property_id] || c.confirmed_at > latestConf[c.property_id]) {
+      latestConf[c.property_id] = c.confirmed_at
+    }
+  }
+
+  for (const p of properties) {
+    const last = latestConf[p.id]
+    const daysSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 9999
+    const dayLabel = daysSince === 9999 ? '3+' : String(daysSince)
+
+    // 3-day nudge to the on-site CM/SM (at most once per day)
+    if (daysSince >= 3 && !(await alreadyReminded(p.id, 'health-3day', 1))) {
+      const targets = recipientsFor(subscriptions, p.id, ['cm', 'sm'])
+      summary.health3++
+      const title = 'Systems Healthy Check Due - ' + p.name
+      const body = 'It has been ' + (daysSince === 9999 ? 'a while' : daysSince + ' days') +
+        ' since systems were confirmed healthy at ' + p.name + '. Please review and tap "Systems Healthy".'
+      if (targets.length) summary.health3Sent += await send(targets, title, body)
+      await logAlert('health-3day', p.id, p.name, 'No systems-healthy confirmation in ' + dayLabel + ' days')
+      await logReminder(p.id, 'health-3day')
+    }
+
+    // 5-day escalation to RM/RSM — push + email (at most once per 2 days)
+    if (daysSince >= 5 && !(await alreadyReminded(p.id, 'health-5day', 2))) {
+      const targets = recipientsFor(subscriptions, p.id, ['rm', 'rsm'])
+      summary.health5++
+      const title = 'Systems Healthy Overdue - ' + p.name
+      const body = p.name + ' has had no systems-healthy confirmation in ' + (daysSince === 9999 ? '5+' : daysSince) +
+        ' days. Please reach out to the on-site CM/SM.'
+      if (targets.length) summary.health5Sent += await send(targets, title, body)
+      const html =
+        '<p>' + p.name + ' has not had a &quot;Systems Healthy&quot; confirmation in ' +
+        (daysSince === 9999 ? '5 or more' : daysSince) + ' days.</p>' +
+        '<p>Please reach out to the on-site Community Manager / Service Manager to confirm system health and resolve any open issues.</p>' +
+        '<p>&mdash; PEM Portfolio Systems Dashboard</p>'
+      summary.health5Emails += await sendEmail([emailOf(p.rm), emailOf(p.rsm)], 'Systems Healthy Overdue - ' + p.name, html)
+      await logAlert('health-5day', p.id, p.name, 'No systems-healthy confirmation in ' + (daysSince === 9999 ? '5+' : daysSince) + ' days')
+      await logReminder(p.id, 'health-5day')
+    }
   }
 
   return NextResponse.json({ ran: true, azWeekday: dow, ...summary })

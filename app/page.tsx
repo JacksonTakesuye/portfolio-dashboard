@@ -188,6 +188,9 @@ export default function Home() {
   const [equipPhotos,   setEquipPhotos]    = useState<Record<string,any[]>>({})
   const [equipDraft,    setEquipDraft]     = useState<Record<string,{file:File,url:string,description:string}>>({})
   const [uploadingEquip,setUploadingEquip] = useState<string|null>(null)
+  // Latest "Systems Healthy" confirmation per property + in-progress flag
+  const [healthConfirmations, setHealthConfirmations] = useState<Record<string,any>>({})
+  const [confirmingHealth,    setConfirmingHealth]    = useState<string|null>(null)
   const [dragOver,      setDragOver]       = useState<string|null>(null)
   const [uploading,     setUploading]      = useState<string|null>(null)
   const [docFilter,     setDocFilter]      = useState('all')
@@ -269,6 +272,7 @@ export default function Home() {
       const {data:alerts}           = await supabase.from('alert_log').select('*').order('created_at',{ascending:false}).limit(50)
       const {data:vendors}          = await supabase.from('system_vendors').select('*').order('created_at',{ascending:true})
       const {data:equipphotos}      = await supabase.from('system_equipment_photos').select('*').order('created_at',{ascending:true})
+      const {data:healthrows}       = await supabase.from('health_confirmations').select('*').order('confirmed_at',{ascending:false})
       const {data:ecosts}           = await supabase.from('event_costs').select('*')
       const {data:eclogs}           = await supabase.from('event_cost_log').select('*').order('created_at',{ascending:false})
       const {data:edocs}            = await supabase.from('event_documents').select('*').order('created_at',{ascending:false})
@@ -308,6 +312,10 @@ export default function Home() {
         const epm:Record<string,any[]>={}
         ;(equipphotos||[]).forEach((p:any)=>{ (epm[p.system_id] = epm[p.system_id]||[]).push(p) })
         setEquipPhotos(epm)
+        // Latest health confirmation per property (rows are newest-first, so first seen wins)
+        const hcm:Record<string,any>={}
+        ;(healthrows||[]).forEach((h:any)=>{ if(!hcm[h.property_id]) hcm[h.property_id]=h })
+        setHealthConfirmations(hcm)
         // Event costs keyed by status_update_id
         const cm:Record<number,any>={}
         ;(ecosts||[]).forEach((c:any)=>{ cm[c.status_update_id]=c })
@@ -973,6 +981,27 @@ export default function Home() {
     showToast('Photo removed')
   }
 
+  // Systems at a property that are currently out of service (blocks "Systems Healthy")
+  const propertyOutages = (propId:string) =>
+    systems.filter((s:any)=> s.property_id===propId && getStatus(s.id)==='out-of-service')
+
+  // Record a "Systems Healthy" confirmation (resets the property's reminder timer).
+  // Blocked while any system is out of service.
+  const confirmHealth = async (prop:any) => {
+    if(!prop) return
+    if(propertyOutages(prop.id).length>0){ showToast('Resolve the open outage before confirming.'); return }
+    setConfirmingHealth(prop.id)
+    const confirmedAt = new Date().toISOString()
+    const {data, error} = await supabase.from('health_confirmations')
+      .insert({property_id:prop.id, confirmed_by:actor()})
+      .select()
+    if(error){ showToast('Error: '+error.message); setConfirmingHealth(null); return }
+    const row = (data&&data[0]) || {property_id:prop.id, confirmed_by:actor(), confirmed_at:confirmedAt}
+    setHealthConfirmations((prev:any)=>({...prev,[prop.id]:row}))
+    showToast('Systems confirmed healthy')
+    setConfirmingHealth(null)
+  }
+
   // bucketKey is the system id, or 'property' for property-wide docs
   const uploadDocument = async (file:File, bucketKey:string) => {
     if(!detailProp) return
@@ -1207,6 +1236,43 @@ export default function Home() {
           View only — you are not assigned to this property, so editing is disabled.
         </div>
       )}
+      {/* System Health confirmation ("Systems Healthy") */}
+      {detailProp && (()=>{
+        const outages = propertyOutages(detailProp.id)
+        const conf = healthConfirmations[detailProp.id]
+        const daysSince = conf ? Math.floor((Date.now()-new Date(conf.confirmed_at).getTime())/86400000) : null
+        const canConfirm = userRole==='admin' || ((userRole==='cm'||userRole==='sm') && myProps.includes(detailProp.id))
+        const overdue = daysSince==null || daysSince>=3
+        const statusColor = outages.length>0 ? '#dc2626' : (daysSince==null ? '#d97706' : daysSince>=5 ? '#dc2626' : daysSince>=3 ? '#d97706' : '#16a34a')
+        const bg = outages.length>0 ? '#fef2f2' : (overdue ? '#fffbeb' : '#f0fdf4')
+        const border = outages.length>0 ? '#fecaca' : (overdue ? '#fde68a' : '#bbf7d0')
+        return (
+          <div style={{marginBottom:'12px',padding:'10px 12px',background:bg,border:'1px solid '+border,borderRadius:'8px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'10px'}}>
+              <div>
+                <div style={{fontSize:'12px',fontWeight:'700',color:'#1e293b'}}>System Health</div>
+                <div style={{fontSize:'11px',color:statusColor,fontWeight:'600',marginTop:'2px'}}>
+                  {outages.length>0
+                    ? outages.length+' system'+(outages.length>1?'s':'')+' out of service'
+                    : conf
+                      ? 'Confirmed healthy '+(daysSince===0?'today':daysSince===1?'1 day ago':daysSince+' days ago')
+                      : 'Not yet confirmed'}
+                </div>
+                {conf && <div style={{fontSize:'9px',color:'#94a3b8',marginTop:'1px'}}>by {conf.confirmed_by}</div>}
+              </div>
+              {canConfirm && (
+                <button onClick={()=>confirmHealth(detailProp)} disabled={outages.length>0||confirmingHealth===detailProp.id}
+                  style={{padding:'8px 12px',background:outages.length>0?'#cbd5e1':'#16a34a',color:'#fff',border:'none',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:outages.length>0?'default':'pointer',whiteSpace:'nowrap' as any}}>
+                  {confirmingHealth===detailProp.id?'Saving...':'Systems Healthy'}
+                </button>
+              )}
+            </div>
+            {canConfirm && outages.length>0 && (
+              <div style={{fontSize:'10px',color:'#b91c1c',marginTop:'6px'}}>Resolve the outage in the Systems tab, then confirm.</div>
+            )}
+          </div>
+        )
+      })()}
       {/* Systems tab */}
       {detailTab==='systems' && (
         <div>
@@ -2032,9 +2098,10 @@ export default function Home() {
             const isNote  = a.type==='note-added'
             const isEdit  = a.type==='psr-edited'
             const isBack  = a.type==='in-service'
-            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':isBack?'#16a34a':'#0369a1'
-            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':isBack?'#f0fdf4':'#eff6ff'
-            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':isBack?'Back In Service':'PSR Submitted'
+            const isHealth= a.type==='health-3day' || a.type==='health-5day'
+            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':isBack?'#16a34a':isHealth?'#d97706':'#0369a1'
+            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':isBack?'#f0fdf4':isHealth?'#fffbeb':'#eff6ff'
+            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':isBack?'Back In Service':a.type==='health-5day'?'Health Check Overdue':isHealth?'Health Check Due':'PSR Submitted'
             const dateStr = a.created_at
               ? new Date(a.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
               : ''
