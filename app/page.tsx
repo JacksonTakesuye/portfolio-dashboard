@@ -18,7 +18,7 @@ const REASONS: Record<string,string[]> = {
   fire_life_safety: ['Fire alarm fault','Fire panel trouble signal','Sprinkler / standpipe issue','Property on fire watch','Emergency lighting failure','Smoke/heat detector failure','Monitoring/communication loss','Scheduled inspection / testing','Other'],
 }
 
-const DOC_TYPES = ['Contract','Warranty','Invoice','General','Other']
+const DOC_TYPES = ['Contract','Other']
 
 const DOC_TYPE_COLORS: Record<string,{bg:string,color:string}> = {
   Contract:{bg:'#eff6ff',color:'#2563eb'},
@@ -194,6 +194,11 @@ export default function Home() {
   const [siteVisits,    setSiteVisits]    = useState<Record<string,any[]>>({})
   const [siteVisitDocs, setSiteVisitDocs] = useState<Record<number,any[]>>({})
   const [visitNote,     setVisitNote]     = useState('')
+  const [visitScore,    setVisitScore]    = useState(5)
+  const [scoreLogs,     setScoreLogs]     = useState<Record<number,any[]>>({})
+  const [editingScore,  setEditingScore]  = useState<number|null>(null)
+  const [scoreDraft,    setScoreDraft]    = useState(5)
+  const [savingScore,   setSavingScore]   = useState<number|null>(null)
   const [savingVisit,   setSavingVisit]   = useState(false)
   const [pendingVisitFiles, setPendingVisitFiles] = useState<File[]>([])
   const [uploadingVisitDoc, setUploadingVisitDoc] = useState<number|null>(null)
@@ -255,6 +260,7 @@ export default function Home() {
       const {data:evendors}         = await supabase.from('event_vendors').select('*').order('created_at',{ascending:true})
       const {data:svisits}          = await supabase.from('site_visits').select('*').order('visit_date',{ascending:false})
       const {data:svdocs}           = await supabase.from('site_visit_documents').select('*').order('created_at',{ascending:false})
+      const {data:sslogs}           = await supabase.from('site_visit_score_log').select('*').order('changed_at',{ascending:false})
       if(e1) setError(e1.message)
       else if(e2) setError(e2.message)
       else {
@@ -306,6 +312,10 @@ export default function Home() {
         const svdm:Record<number,any[]>={}
         ;(svdocs||[]).forEach((d:any)=>{ (svdm[d.site_visit_id] = svdm[d.site_visit_id]||[]).push(d) })
         setSiteVisitDocs(svdm)
+        // Score change history grouped by visit (newest first)
+        const sslm:Record<number,any[]>={}
+        ;(sslogs||[]).forEach((l:any)=>{ (sslm[l.site_visit_id] = sslm[l.site_visit_id]||[]).push(l) })
+        setScoreLogs(sslm)
       }
       setLoading(false)
     }
@@ -377,6 +387,8 @@ export default function Home() {
   const isTeamMember = userRole==='team_member'
   // Only RM, RSM, and admin may log site visits
   const canEditVisits = userRole==='rm' || userRole==='rsm' || userRole==='admin'
+  // Only RMs and RSMs score properties (admins don't do site visits)
+  const canScore = userRole==='rm' || userRole==='rsm'
 
   // Days since the most recent visit to a property (null if never visited)
   const daysSinceVisit = (propId:string) => {
@@ -386,15 +398,27 @@ export default function Home() {
     return Math.floor((Date.now()-new Date(latest.visit_date).getTime())/86400000)
   }
 
+  // Average property score (1-10) from the most recent RM score and most recent RSM score.
+  // Returns null if neither has scored yet. If only one has scored, that single score is shown.
+  const propScore = (propId:string) => {
+    const scored = (siteVisits[propId]||[]).filter((v:any)=> v.score!=null && (v.visitor_role==='rm' || v.visitor_role==='rsm'))
+    const latestFor = (role:string) => scored
+      .filter((v:any)=>v.visitor_role===role)
+      .sort((a:any,b:any)=> new Date(b.visit_date).getTime()-new Date(a.visit_date).getTime())[0]
+    const scores = [latestFor('rm')?.score, latestFor('rsm')?.score].filter((s:any)=> s!=null) as number[]
+    if(scores.length===0) return null
+    return Math.round((scores.reduce((a,b)=>a+b,0)/scores.length)*10)/10
+  }
+
   const saveSiteVisit = async () => {
     if(!detailProp || !canEditVisits) return
     setSavingVisit(true)
     const today = new Date().toISOString().split('T')[0]
     const {data, error} = await supabase.from('site_visits')
-      .insert({property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null})
+      .insert({property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null, score:canScore?visitScore:null, visitor_role:userRole||null})
       .select()
     if(error){ showToast('Error: '+error.message); setSavingVisit(false); return }
-    const inserted = (data&&data[0]) || {id:Date.now(), property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null, created_at:new Date().toISOString()}
+    const inserted = (data&&data[0]) || {id:Date.now(), property_id:detailProp.id, visitor:actor(), visit_date:today, notes:visitNote||null, score:canScore?visitScore:null, visitor_role:userRole||null, created_at:new Date().toISOString()}
     setSiteVisits((prev:any)=>({...prev,[detailProp.id]:[inserted,...(prev[detailProp.id]||[])]}))
 
     // Upload any files attached during creation, now that the visit has an id.
@@ -418,8 +442,36 @@ export default function Home() {
     }
 
     setVisitNote('')
+    setVisitScore(5)
     setPendingVisitFiles([])
     setSavingVisit(false)
+  }
+
+  // Adjust an existing visit's score (RM/RSM only). Records an audit row: who, when, old -> new.
+  const saveScoreEdit = async (visit:any) => {
+    if(!canScore) return
+    const oldScore = visit.score ?? null
+    const newScore = scoreDraft
+    if(oldScore === newScore){ setEditingScore(null); return }
+    setSavingScore(visit.id)
+    const changedAt = new Date().toISOString()
+    const {error} = await supabase.from('site_visits').update({score:newScore}).eq('id',visit.id)
+    if(error){ showToast('Error: '+error.message); setSavingScore(null); return }
+    await supabase.from('site_visit_score_log').insert({
+      site_visit_id: visit.id,
+      property_id:   visit.property_id,
+      old_score:     oldScore,
+      new_score:     newScore,
+      changed_by:    actor(),
+      changed_at:    changedAt,
+    })
+    // Update the visit's score in local state so the card average + chip refresh
+    setSiteVisits((prev:any)=>({...prev,[visit.property_id]:(prev[visit.property_id]||[]).map((v:any)=>v.id===visit.id?{...v,score:newScore}:v)}))
+    // Prepend to the visible change log
+    setScoreLogs((prev:any)=>({...prev,[visit.id]:[{old_score:oldScore,new_score:newScore,changed_by:actor(),changed_at:changedAt},...(prev[visit.id]||[])]}))
+    setEditingScore(null)
+    setSavingScore(null)
+    showToast('Score updated')
   }
 
   const uploadVisitDoc = async (visit:any, file:File) => {
@@ -1176,75 +1228,13 @@ export default function Home() {
                                     {h.notes  && <div style={{fontSize:'10px',color:'#64748b',fontStyle:'italic'}}>{h.notes}</div>}
                                     <div style={{fontSize:'10px',color:'#94a3b8',marginTop:'1px'}}>by {h.reported_by||'Staff'}</div>
 
-                                    {/* Cost / ETA / files — only meaningful for non-in-service events with a saved id */}
+                                    {/* Vendor used on this event — only for non-in-service events with a saved id */}
                                     {h.id && h.status!=='in-service' && (()=>{
-                                      const cost = eventCosts[h.id]
-                                      const logs = cost?costLogs[cost.id]||[]:[]
-                                      const edocs = eventDocs[h.id]||[]
-                                      const costOpen = !!expandedCosts[h.id]
-                                      const cd = costDrafts[h.id]||{estimated_cost:cost?.estimated_cost??'',estimated_completion:cost?.estimated_completion??'',editor:''}
                                       const evendors = eventVendors[h.id]||[]
                                       const evOpen = !!expandedEventVendors[h.id]
                                       const evd = eventVendorDrafts[h.id]||{vendor_name:'',phone:'',email:'',work_description:''}
                                       return (
                                         <>
-                                        <div style={{marginTop:'6px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px'}}>
-                                          <div onClick={()=>setExpandedCosts(prev=>({...prev,[h.id]:!costOpen}))} style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}>
-                                            <span style={{fontSize:'10px',fontWeight:'700',color:'#475569'}}>
-                                              Cost / ETA / Files
-                                              {cost?.estimated_cost!=null && <span style={{marginLeft:'6px',color:'#0f766e'}}>${cost.estimated_cost}</span>}
-                                              {cost?.estimated_completion && <span style={{marginLeft:'6px',color:'#64748b'}}>ETA {cost.estimated_completion}</span>}
-                                            </span>
-                                            <span style={{fontSize:'10px',color:'#94a3b8'}}>{costOpen?'▲':'▼'}</span>
-                                          </div>
-                                          {costOpen && (
-                                            <div style={{marginTop:'8px'}}>
-                                              {userRole==='admin' && cost?.id && (
-                                                <button onClick={()=>askDelete('Delete the cost/ETA entry for this event? This also clears its edit history. This cannot be undone.', ()=>deleteEventCost(cost, h.id))} style={{width:'100%',padding:'5px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer',marginBottom:'6px'}}>🗑️ Delete Cost / ETA Entry</button>
-                                              )}
-                                              {editable && (
-                                                <>
-                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Cost ($)</div>
-                                                  <input value={cd.estimated_cost} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_cost:e.target.value}}))} placeholder='0.00' inputMode='decimal' style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Estimated Completion Date</div>
-                                                  <input type='date' value={cd.estimated_completion} onChange={e=>setCostDrafts(prev=>({...prev,[h.id]:{...cd,estimated_completion:e.target.value}}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'11px',boxSizing:'border-box' as any,marginBottom:'5px'}}/>
-                                                  <div style={{fontSize:'9px',color:'#94a3b8',marginBottom:'2px'}}>Saving as</div>
-                                                  <div style={{padding:'5px 8px',borderRadius:'5px',background:'#f1f5f9',border:'1px solid #e2e8f0',fontSize:'11px',color:'#334155',fontWeight:'600',marginBottom:'5px'}}>{userName||'Unknown user'}</div>
-                                                  <button onClick={()=>saveCost(h,sys.id)} disabled={savingCost===h.id} style={{width:'100%',padding:'6px',background:'#0f766e',color:'#fff',border:'none',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer',marginBottom:'6px'}}>
-                                                    {savingCost===h.id?'Saving...':(cost?'Update Cost / ETA':'Save Cost / ETA')}
-                                                  </button>
-
-                                                  {/* Files / photos for this event */}
-                                                  <label style={{display:'block',width:'100%',padding:'6px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'10px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
-                                                    {uploadingEventDoc===h.id?'Uploading...':'+ Add Photo / Invoice / Quote'}
-                                                    <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadEventDoc(h,sys.id,f)}}/>
-                                                  </label>
-                                                </>
-                                              )}
-                                              {edocs.map((d:any,di:number)=>(
-                                                <div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 6px',background:'#f8fafc',borderRadius:'5px',marginBottom:'4px'}}>
-                                                  <span style={{fontSize:'10px',color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:'150px'}}>{d.file_name}</span>
-                                                  <button onClick={()=>viewDocument(d.file_path)} style={{padding:'2px 8px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'9px',fontWeight:'600',cursor:'pointer'}}>View</button>
-                                                  {d.id && TrashBtn('Delete file "'+d.file_name+'" from this event? This cannot be undone.', ()=>deleteEventDoc(d, h.id), 11)}
-                                                </div>
-                                              ))}
-
-                                              {/* Edit log */}
-                                              {logs.length>0 && (
-                                                <div style={{marginTop:'6px',borderTop:'1px solid #f1f5f9',paddingTop:'6px'}}>
-                                                  <div style={{fontSize:'9px',fontWeight:'700',color:'#94a3b8',marginBottom:'3px'}}>Edit History</div>
-                                                  {logs.map((l:any,li:number)=>(
-                                                    <div key={li} style={{fontSize:'9px',color:'#64748b',marginBottom:'2px'}}>
-                                                      <span style={{fontWeight:'600',color:'#334155'}}>{l.edited_by}</span> · {fmtDateTime(l.created_at)}<br/>
-                                                      <span style={{color:'#92400e'}}>{l.changes}</span>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              )}
-                                            </div>
-                                          )}
-                                        </div>
-
                                         {/* Vendor used on THIS event (collapsible, multiple allowed) */}
                                         <div style={{marginTop:'6px',background:'#fff',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px'}}>
                                           <div onClick={()=>setExpandedEventVendors(prev=>({...prev,[h.id]:!evOpen}))} style={{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}}>
@@ -1767,6 +1757,7 @@ export default function Home() {
         const overdue = days!==null && days>30
         return (
           <div>
+            <div style={{fontWeight:'700',fontSize:'13px',color:'#1e293b',marginBottom:'12px'}}>Management Site Visits</div>
             {/* Days since last visit banner */}
             <div style={{marginBottom:'14px',padding:'12px',borderRadius:'10px',textAlign:'center',
               background: days===null?'#f1f5f9':(overdue?'#fef2f2':'#f0fdf4'),
@@ -1788,6 +1779,19 @@ export default function Home() {
                   Visiting as <span style={{fontWeight:'700',color:'#475569'}}>{userName||'Unknown user'}</span> · {new Date().toLocaleDateString()}
                 </div>
                 <textarea value={visitNote} onChange={e=>setVisitNote(e.target.value)} placeholder='Visit notes (optional)...' style={{width:'100%',padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',minHeight:'56px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'6px'}}/>
+                {/* Property score (1-10) for this visit — RM/RSM only */}
+                {canScore && (
+                <div style={{marginBottom:'8px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'4px'}}>
+                    <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Property Score</span>
+                    <span style={{fontSize:'13px',fontWeight:'700',color:'#2563eb'}}>{visitScore} / 10</span>
+                  </div>
+                  <input type='range' min={1} max={10} step={1} value={visitScore} onChange={e=>setVisitScore(Number(e.target.value))} style={{width:'100%'}}/>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:'9px',color:'#94a3b8'}}>
+                    <span>1 — Poor</span><span>10 — Excellent</span>
+                  </div>
+                </div>
+                )}
                 {/* Attach files/reports as part of the visit entry */}
                 <label style={{display:'block',padding:'7px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'11px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
                   + Attach Report / Document / Photo
@@ -1830,14 +1834,51 @@ export default function Home() {
                       <div onClick={()=>setExpandedVisit(open?null:v.id)} style={{padding:'10px 12px',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',background:'#f8fafc'}}>
                         <div>
                           <div style={{fontWeight:'600',fontSize:'12px',color:'#1e293b'}}>{v.visit_date}</div>
-                          <div style={{fontSize:'11px',color:'#94a3b8',marginTop:'2px'}}>by {v.visitor||'—'}</div>
+                          <div style={{fontSize:'11px',color:'#94a3b8',marginTop:'2px'}}>by {v.visitor||'—'}{v.visitor_role?' · '+(ROLE_LABELS[v.visitor_role]||v.visitor_role):''}</div>
                         </div>
-                        <span style={{fontSize:'12px',color:'#94a3b8'}}>{open?'▲':'▼'}</span>
+                        <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                          {v.score!=null && <span style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap' as any}}>★ {v.score}/10</span>}
+                          <span style={{fontSize:'12px',color:'#94a3b8'}}>{open?'▲':'▼'}</span>
+                        </div>
                       </div>
                       {open && (
                         <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0'}}>
                           {v.notes && <div style={{fontSize:'12px',color:'#1e293b',whiteSpace:'pre-wrap',marginBottom:'8px'}}>{v.notes}</div>}
                           {!v.notes && <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'8px',fontStyle:'italic'}}>No notes.</div>}
+
+                          {/* Property score: display, RM/RSM adjust, and change history */}
+                          <div style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:'6px',padding:'8px',marginBottom:'8px'}}>
+                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                              <span style={{fontSize:'11px',fontWeight:'700',color:'#475569'}}>Property Score: {v.score!=null?<span style={{color:'#1d4ed8'}}>{v.score}/10</span>:<span style={{color:'#94a3b8',fontWeight:'400'}}>not scored</span>}</span>
+                              {canScore && editingScore!==v.id && (
+                                <button onClick={()=>{ setEditingScore(v.id); setScoreDraft(v.score!=null?v.score:5) }} style={{padding:'3px 10px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Edit score</button>
+                              )}
+                            </div>
+                            {canScore && editingScore===v.id && (
+                              <div style={{marginTop:'8px'}}>
+                                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'4px'}}>
+                                  <span style={{fontSize:'10px',color:'#94a3b8'}}>New score</span>
+                                  <span style={{fontSize:'13px',fontWeight:'700',color:'#2563eb'}}>{scoreDraft} / 10</span>
+                                </div>
+                                <input type='range' min={1} max={10} step={1} value={scoreDraft} onChange={e=>setScoreDraft(Number(e.target.value))} style={{width:'100%'}}/>
+                                <div style={{fontSize:'9px',color:'#94a3b8',margin:'2px 0 6px'}}>Saving as {userName||'Unknown user'}</div>
+                                <div style={{display:'flex',gap:'6px'}}>
+                                  <button onClick={()=>setEditingScore(null)} style={{flex:1,padding:'6px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>
+                                  <button onClick={()=>saveScoreEdit(v)} disabled={savingScore===v.id} style={{flex:1,padding:'6px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>{savingScore===v.id?'Saving...':'Save Score'}</button>
+                                </div>
+                              </div>
+                            )}
+                            {(scoreLogs[v.id]||[]).length>0 && (
+                              <div style={{marginTop:'8px',borderTop:'1px solid #e2e8f0',paddingTop:'6px'}}>
+                                <div style={{fontSize:'9px',fontWeight:'700',color:'#94a3b8',marginBottom:'3px'}}>Score Changes</div>
+                                {(scoreLogs[v.id]||[]).map((l:any,li:number)=>(
+                                  <div key={li} style={{fontSize:'9px',color:'#64748b',marginBottom:'2px'}}>
+                                    <span style={{fontWeight:'600',color:'#334155'}}>{l.changed_by||'—'}</span> changed {l.old_score==null?'(none)':l.old_score+'/10'} → {l.new_score}/10 · {fmtDateTime(l.changed_at)}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
 
                           {/* Visit documents */}
                           {vdocs.map((d:any,di:number)=>(
@@ -1958,8 +1999,6 @@ export default function Home() {
             : list.map((r:any)=>{
                 const rowKey = r.sys.id
                 const open = expandedOutRow===rowKey
-                const cost = eventCosts[r.st?.id]
-                const edocs = eventDocs[r.st?.id]||[]
                 const evendors = eventVendors[r.st?.id]||[]
                 return (
                   <div key={rowKey} style={{border:'1px solid #e2e8f0',borderRadius:'8px',marginBottom:'8px',overflow:'hidden',background:'#fff'}}>
@@ -1978,15 +2017,7 @@ export default function Home() {
                         {r.st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'3px'}}>Reason: {r.st.reason}</div>}
                         {r.st?.notes && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'3px'}}>{r.st.notes}</div>}
                         <div style={{fontSize:'11px',color:'#475569',marginBottom:'3px'}}>Reported by {r.st?.reported_by||'—'} · {fmtDateTime(r.since)}</div>
-                        {cost?.estimated_cost!=null && <div style={{fontSize:'11px',color:'#0f766e',marginBottom:'3px'}}>Est. cost: ${cost.estimated_cost}{cost.estimated_completion?' · ETA '+cost.estimated_completion:''}</div>}
                         {evendors.length>0 && <div style={{fontSize:'11px',color:'#475569',marginBottom:'3px'}}>Vendor: {evendors.map((v:any)=>v.vendor_name).join(', ')}</div>}
-                        {edocs.length>0 && (
-                          <div style={{display:'flex',flexWrap:'wrap',gap:'6px',margin:'6px 0'}}>
-                            {edocs.map((d:any,di:number)=>(
-                              <button key={di} onClick={()=>viewDocument(d.file_path)} style={{padding:'3px 8px',background:'#eff6ff',color:'#2563eb',border:'none',borderRadius:'5px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>{d.file_name.length>18?d.file_name.slice(0,15)+'...':d.file_name}</button>
-                            ))}
-                          </div>
-                        )}
                         <button
                           onClick={()=>{ setSystemsOutOpen(false); setSelectedProp(r.prop.id); setDetailTab('systems'); setMobileTab('portfolio') }}
                           style={{marginTop:'6px',padding:'7px 12px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}
@@ -2206,9 +2237,14 @@ export default function Home() {
                           <div style={{fontWeight:'600',fontSize:'13px',color:'#1e293b',marginBottom:'2px'}}>{prop.name}</div>
                           <div style={{fontSize:'11px',color:'#64748b'}}>{prop.city}, {abbr(prop.state)}{prop.rm?' · '+prop.rm:''}</div>
                         </div>
-                        {propHasIssue(prop) && (
-                          <span style={{background:'#fef2f2',color:'#dc2626',fontSize:'10px',fontWeight:'600',padding:'2px 7px',borderRadius:'10px',flexShrink:0,marginLeft:'8px'}}>Issue</span>
-                        )}
+                        <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'4px',flexShrink:0,marginLeft:'8px'}}>
+                          {propHasIssue(prop) && (
+                            <span style={{background:'#fef2f2',color:'#dc2626',fontSize:'10px',fontWeight:'600',padding:'2px 7px',borderRadius:'10px'}}>Issue</span>
+                          )}
+                          {(()=>{ const sc = propScore(prop.id); return sc==null ? null : (
+                            <span title='Average of the latest RM and RSM site-visit scores' style={{background:'#eff6ff',color:'#1d4ed8',fontSize:'10px',fontWeight:'700',padding:'2px 7px',borderRadius:'10px',whiteSpace:'nowrap' as any}}>★ {sc}/10</span>
+                          )})()}
+                        </div>
                       </div>
                       {renderSystemBadges(prop)}
                     </div>
