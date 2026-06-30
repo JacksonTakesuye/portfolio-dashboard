@@ -80,6 +80,14 @@ const SI = (label:string, f:string, form:any, setForm:any) => (
   </div>
 )
 
+// Date-input variant of SI (for inspection dates etc.)
+const SID = (label:string, f:string, form:any, setForm:any) => (
+  <div style={{marginBottom:'6px'}}>
+    <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>{label}</div>
+    <input type='date' value={form[f]||''} onChange={e=>setForm((p:any)=>({...p,[f]:e.target.value}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',boxSizing:'border-box' as any}}/>
+  </div>
+)
+
 const CB = (label:string, f:string, form:any, setForm:any) => (
   <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'6px'}}>
     <input type='checkbox' checked={!!form[f]} onChange={e=>setForm((p:any)=>({...p,[f]:e.target.checked}))}/>
@@ -176,6 +184,10 @@ export default function Home() {
   const [savingPsr,     setSavingPsr]      = useState(false)
   const [sysInfoForm,   setSysInfoForm]    = useState<Record<string,any>>({})
   const [savingSysInfo, setSavingSysInfo]  = useState(false)
+  // Pool equipment photos (permanent, per system) + the pending photo being described before upload
+  const [equipPhotos,   setEquipPhotos]    = useState<Record<string,any[]>>({})
+  const [equipDraft,    setEquipDraft]     = useState<Record<string,{file:File,url:string,description:string}>>({})
+  const [uploadingEquip,setUploadingEquip] = useState<string|null>(null)
   const [dragOver,      setDragOver]       = useState<string|null>(null)
   const [uploading,     setUploading]      = useState<string|null>(null)
   const [docFilter,     setDocFilter]      = useState('all')
@@ -254,6 +266,7 @@ export default function Home() {
       const {data:docs}             = await supabase.from('documents').select('*').order('created_at',{ascending:false})
       const {data:alerts}           = await supabase.from('alert_log').select('*').order('created_at',{ascending:false}).limit(50)
       const {data:vendors}          = await supabase.from('system_vendors').select('*').order('created_at',{ascending:true})
+      const {data:equipphotos}      = await supabase.from('system_equipment_photos').select('*').order('created_at',{ascending:true})
       const {data:ecosts}           = await supabase.from('event_costs').select('*')
       const {data:eclogs}           = await supabase.from('event_cost_log').select('*').order('created_at',{ascending:false})
       const {data:edocs}            = await supabase.from('event_documents').select('*').order('created_at',{ascending:false})
@@ -289,6 +302,10 @@ export default function Home() {
         const vm:Record<string,any[]>={}
         ;(vendors||[]).forEach((v:any)=>{ (vm[v.system_id] = vm[v.system_id]||[]).push(v) })
         setSystemVendors(vm)
+        // Equipment photos grouped by system
+        const epm:Record<string,any[]>={}
+        ;(equipphotos||[]).forEach((p:any)=>{ (epm[p.system_id] = epm[p.system_id]||[]).push(p) })
+        setEquipPhotos(epm)
         // Event costs keyed by status_update_id
         const cm:Record<number,any>={}
         ;(ecosts||[]).forEach((c:any)=>{ cm[c.status_update_id]=c })
@@ -920,6 +937,34 @@ export default function Home() {
     if(error) showToast('Error: '+error.message)
     else { showToast('Saved'); setSystemInfos((prev:any)=>({...prev,[systemId]:data})) }
     setSavingSysInfo(false)
+  }
+
+  // ─── Pool equipment photos (permanent, per system; each requires a description) ───
+  const uploadEquipPhoto = async (systemId:string, propertyId:string) => {
+    const draft = equipDraft[systemId]
+    if(!draft || !draft.description.trim()) return
+    setUploadingEquip(systemId)
+    const path = 'equipment/'+systemId+'/'+Date.now()+'-'+draft.file.name
+    const {error:upErr} = await supabase.storage.from('documents').upload(path,draft.file)
+    if(upErr){ showToast('Upload error: '+upErr.message); setUploadingEquip(null); return }
+    const {data, error:dbErr} = await supabase.from('system_equipment_photos')
+      .insert({system_id:systemId, property_id:propertyId, file_name:draft.file.name, file_path:path, file_size:draft.file.size, description:draft.description.trim(), uploaded_by:actor()})
+      .select()
+    if(dbErr){ showToast('DB error: '+dbErr.message); setUploadingEquip(null); return }
+    const inserted = (data&&data[0]) || {system_id:systemId, file_name:draft.file.name, file_path:path, file_size:draft.file.size, description:draft.description.trim(), uploaded_by:actor(), created_at:new Date().toISOString()}
+    setEquipPhotos((prev:any)=>({...prev,[systemId]:[...(prev[systemId]||[]),inserted]}))
+    URL.revokeObjectURL(draft.url)
+    setEquipDraft((prev:any)=>{ const n={...prev}; delete n[systemId]; return n })
+    showToast('Photo added')
+    setUploadingEquip(null)
+  }
+
+  const deleteEquipPhoto = async (photo:any, systemId:string) => {
+    const {error} = await supabase.from('system_equipment_photos').delete().eq('id',photo.id)
+    if(error){ showToast('Error: '+error.message); return }
+    if(photo.file_path) await supabase.storage.from('documents').remove([photo.file_path])
+    setEquipPhotos((prev:any)=>({...prev,[systemId]:(prev[systemId]||[]).filter((p:any)=>p.id!==photo.id)}))
+    showToast('Photo removed')
   }
 
   // bucketKey is the system id, or 'property' for property-wide docs
@@ -1661,15 +1706,68 @@ export default function Home() {
                 return (
                   <div key={sys.id} style={{border:'1px solid #e2e8f0',borderRadius:'8px',padding:'12px',marginBottom:'12px',background:'#fafafa'}}>
                     <div style={{fontWeight:'600',fontSize:'13px',marginBottom:'8px'}}>{sys.name}</div>
-                    {SI('Model Number','model_number',localForm,setLocalForm)}
-                    {SI('Manufacturer','manufacturer',localForm,setLocalForm)}
-                    {SI('Year Installed','year_installed',localForm,setLocalForm)}
-                    {SI('Warranty Expiry','warranty_expiry',localForm,setLocalForm)}
-                    {SI('Last Inspection','last_inspection',localForm,setLocalForm)}
-                    {SI('Notes','notes',localForm,setLocalForm)}
-                    {editable && <button onClick={()=>saveSysInfo(sys.id)} disabled={savingSysInfo} style={{width:'100%',padding:'7px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
-                      {savingSysInfo?'Saving...':'Save'}
-                    </button>}
+                    {(()=>{
+                      const t = sys.system_type
+                      if(t==='pool'){
+                        // Pool: permanent equipment photo gallery; each photo requires a description. No text fields.
+                        const photos = equipPhotos[sys.id]||[]
+                        const draft = equipDraft[sys.id]
+                        return (
+                          <div>
+                            <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'4px'}}>Equipment Photos</div>
+                            <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'8px'}}>Equipment, motors, filter, pool kit, plumbing. Each photo requires a description.</div>
+                            <div style={{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'10px'}}>
+                              {photos.length===0 && <div style={{fontSize:'11px',color:'#94a3b8'}}>No equipment photos yet.</div>}
+                              {photos.map((p:any,i:number)=>(
+                                <div key={p.id||i} style={{width:'92px'}}>
+                                  <div style={{position:'relative' as any}}>
+                                    <img src={'#'} data-path={p.file_path} alt={p.description} title={p.description}
+                                         style={{width:'92px',height:'70px',objectFit:'cover' as any,borderRadius:'6px',border:'1px solid #e2e8f0',cursor:'pointer'}}
+                                         onClick={()=>openPsrPhoto(p.file_path)}
+                                         ref={el=>{ if(el) hydratePsrThumb(el,p.file_path) }}/>
+                                    {editable && <button onClick={()=>askDelete('Delete this equipment photo ("'+(p.description||p.file_name)+'")? This cannot be undone.', ()=>deleteEquipPhoto(p, sys.id))} style={{position:'absolute' as any,top:'-6px',right:'-6px',background:'#dc2626',color:'#fff',border:'none',borderRadius:'50%',width:'18px',height:'18px',fontSize:'11px',lineHeight:1,cursor:'pointer'}}>×</button>}
+                                  </div>
+                                  <div style={{fontSize:'9px',color:'#475569',marginTop:'3px',wordBreak:'break-word' as any}}>{p.description}</div>
+                                </div>
+                              ))}
+                            </div>
+                            {editable && (
+                              draft ? (
+                                <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'8px',padding:'10px'}}>
+                                  <img src={draft.url} alt='' style={{width:'100%',maxHeight:'160px',objectFit:'contain' as any,borderRadius:'6px',marginBottom:'8px'}}/>
+                                  <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Description (required)</div>
+                                  <input value={draft.description} onChange={e=>setEquipDraft((prev:any)=>({...prev,[sys.id]:{...draft,description:e.target.value}}))} placeholder='e.g. Main filter motor, north pump' style={{width:'100%',padding:'6px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',boxSizing:'border-box' as any,marginBottom:'8px'}}/>
+                                  <div style={{display:'flex',gap:'6px'}}>
+                                    <button onClick={()=>{ URL.revokeObjectURL(draft.url); setEquipDraft((prev:any)=>{const n={...prev}; delete n[sys.id]; return n}) }} style={{flex:1,padding:'7px',background:'#f1f5f9',color:'#64748b',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Cancel</button>
+                                    <button onClick={()=>uploadEquipPhoto(sys.id, detailProp!.id)} disabled={!draft.description.trim()||uploadingEquip===sys.id} style={{flex:1,padding:'7px',background:!draft.description.trim()?'#cbd5e1':'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:!draft.description.trim()?'default':'pointer'}}>{uploadingEquip===sys.id?'Uploading...':'Add Photo'}</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <label style={{display:'inline-block',padding:'8px 14px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>
+                                  + Add Equipment Photo
+                                  <input type='file' accept='image/*' style={{display:'none'}} onChange={e=>{ const f=e.target.files?.[0]; if(f) setEquipDraft((prev:any)=>({...prev,[sys.id]:{file:f,url:URL.createObjectURL(f),description:''}})); e.target.value='' }}/>
+                                </label>
+                              )
+                            )}
+                          </div>
+                        )
+                      }
+                      // Non-pool types: only the requested fields, plus Save
+                      let fields:any = null
+                      if(t==='fire_life_safety') fields = SID('Annual Inspection (Date)','last_inspection',localForm,setLocalForm)
+                      else if(t==='elevator') fields = <>{SI('Manufacturer','manufacturer',localForm,setLocalForm)}{SID('Annual Inspection (Date)','last_inspection',localForm,setLocalForm)}</>
+                      else if(t==='compactor') fields = SI('Manufacturer','manufacturer',localForm,setLocalForm)
+                      else if(t==='gate') fields = SI('Manufacturer','manufacturer',localForm,setLocalForm)
+                      else fields = <>{SI('Model Number','model_number',localForm,setLocalForm)}{SI('Manufacturer','manufacturer',localForm,setLocalForm)}{SI('Year Installed','year_installed',localForm,setLocalForm)}{SI('Warranty Expiry','warranty_expiry',localForm,setLocalForm)}{SI('Last Inspection','last_inspection',localForm,setLocalForm)}{SI('Notes','notes',localForm,setLocalForm)}</>
+                      return (
+                        <div>
+                          {fields}
+                          {editable && <button onClick={()=>saveSysInfo(sys.id)} disabled={savingSysInfo} style={{width:'100%',padding:'7px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer',marginTop:'4px'}}>
+                            {savingSysInfo?'Saving...':'Save'}
+                          </button>}
+                        </div>
+                      )
+                    })()}
 
                     {/* ── Servicing Vendors (permanent vendors for this system) ── */}
                     <div style={{marginTop:'12px',borderTop:'1px solid #e2e8f0',paddingTop:'10px'}}>
