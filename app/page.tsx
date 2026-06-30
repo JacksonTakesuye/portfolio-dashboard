@@ -197,6 +197,8 @@ export default function Home() {
   // ─── Systems Out portfolio-wide view ───
   const [systemsOutOpen, setSystemsOutOpen] = useState(false)
   const [systemsOutSort, setSystemsOutSort] = useState<'recent'|'state'|'rm'|'property'>('recent')
+  const [systemsOutFilterType,  setSystemsOutFilterType]  = useState<'state'|'rm'|'rsm'>('state')
+  const [systemsOutFilterValue, setSystemsOutFilterValue] = useState('all')
   const [expandedOutRow, setExpandedOutRow] = useState<string|null>(null)
   // ─── Admin delete: holds the entry pending confirmation ───
   // shape: {kind, label, run:()=>Promise<void>}
@@ -402,6 +404,10 @@ export default function Home() {
     return myProps.includes(propId)
   }
   const isTeamMember = userRole==='team_member'
+  // On-site roles (CM, SM, Team Member) only ever see their assigned properties.
+  const restrictedToAssigned = userRole==='team_member' || userRole==='cm' || userRole==='sm'
+  // Admins, RMs, and RSMs can see the whole portfolio (e.g. all systems out).
+  const seesAllProperties = userRole==='admin' || userRole==='rm' || userRole==='rsm'
   // Only RM, RSM, and admin may log site visits
   const canEditVisits = userRole==='rm' || userRole==='rsm' || userRole==='admin'
   // RMs, RSMs, and admins can enter/adjust scores. (Admin scores are still
@@ -539,7 +545,7 @@ export default function Home() {
       setStatusHistory((prev:any)=>({...prev,[modal.id]:[inserted,...(prev[modal.id]||[])]}))
       showToast('Status updated')
       setModal(null)
-      if(form.status==='out-of-service'||form.status==='maintenance'){
+      if(form.status==='out-of-service'||form.status==='maintenance'||form.status==='in-service'){
         const newAlert = {type:form.status, property_id:detailProp?.id||'', property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:createdAt}
         setAlertLog((prev:any)=>[newAlert,...prev])
         await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status, systemName:modal.name, propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', reason:form.reason})})
@@ -1014,7 +1020,7 @@ export default function Home() {
   const rms = [...new Set(properties.map((p:any)=>p.rm).filter(Boolean))].sort()
   const rsms = [...new Set(properties.map((p:any)=>p.rsm).filter(Boolean))].sort()
   // Team Members see only their assigned properties; everyone else sees all.
-  const visibleProperties = isTeamMember ? properties.filter((p:any)=>myProps.includes(p.id)) : properties
+  const visibleProperties = restrictedToAssigned ? properties.filter((p:any)=>myProps.includes(p.id)) : properties
   const filtered = visibleProperties.filter((p:any)=>{
     const tabOk = tab==='all'||(tab==='elevators'&&p.has_elevator)||(tab==='compactors'&&p.has_compactor)||(tab==='pools'&&p.has_pool)||(tab==='gates'&&p.has_gate)
     // State and RM filters are independent — whichever filter type is active is the one applied.
@@ -2025,9 +2031,10 @@ export default function Home() {
             const isPsr   = a.type==='psr-submitted'
             const isNote  = a.type==='note-added'
             const isEdit  = a.type==='psr-edited'
-            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':'#0369a1'
-            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':'#eff6ff'
-            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':'PSR Submitted'
+            const isBack  = a.type==='in-service'
+            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':isBack?'#16a34a':'#0369a1'
+            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':isBack?'#f0fdf4':'#eff6ff'
+            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':isBack?'Back In Service':'PSR Submitted'
             const dateStr = a.created_at
               ? new Date(a.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
               : ''
@@ -2050,8 +2057,7 @@ export default function Home() {
 
   // ─── Systems Out portfolio-wide view ─────────────────────────────────────────
   const renderSystemsOut = () => {
-    // Build outage rows for systems currently out-of-service or maintenance,
-    // respecting role visibility (admin sees all; others only assigned properties).
+    // Build outage rows for systems currently out-of-service or maintenance.
     const rows = systems
       .map((s:any)=>{
         const st = statuses[s.id]
@@ -2059,13 +2065,20 @@ export default function Home() {
         if(status!=='out-of-service' && status!=='maintenance') return null
         const prop = properties.find((p:any)=>p.id===s.property_id)
         if(!prop) return null
-        if(isTeamMember && !myProps.includes(prop.id)) return null
         return {sys:s, prop, st, status, since:st?.created_at||null}
       })
       .filter(Boolean) as any[]
 
-    // Non-admins (other than team members who are already filtered) see only assigned props' outages
-    const visibleRows = userRole==='admin' ? rows : rows.filter((r:any)=> myProps.includes(r.prop.id))
+    // Visibility: admins, RMs, and RSMs see all outages; on-site roles (CM/SM/Team) only their assigned properties.
+    const scoped = seesAllProperties ? rows : rows.filter((r:any)=> myProps.includes(r.prop.id))
+
+    // Optional filter (only for the portfolio-wide viewers) — by State, RM, or RSM, mirroring the main portfolio filter.
+    const visibleRows = !seesAllProperties ? scoped : scoped.filter((r:any)=>{
+      if(systemsOutFilterValue==='all') return true
+      if(systemsOutFilterType==='state') return r.prop.state===systemsOutFilterValue
+      if(systemsOutFilterType==='rm')    return r.prop.rm===systemsOutFilterValue
+      return r.prop.rsm===systemsOutFilterValue
+    })
 
     const sortRows = (arr:any[]) => {
       const a = [...arr]
@@ -2141,19 +2154,47 @@ export default function Home() {
             <button onClick={()=>setSystemsOutOpen(false)} style={{display:'flex',alignItems:'center',gap:'4px',background:'rgba(255,255,255,0.1)',border:'none',borderRadius:'20px',padding:'6px 14px',color:'#cbd5e1',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>← Back</button>
             <div>
               <div style={{color:'#f8fafc',fontSize:isMobile?'14px':'15px',fontWeight:'700'}}>Systems Out</div>
-              <div style={{color:'#64748b',fontSize:'11px'}}>{userRole==='admin'?'All properties':'Your assigned properties'}</div>
+              <div style={{color:'#64748b',fontSize:'11px'}}>{seesAllProperties?'All properties':'Your assigned properties'}</div>
             </div>
           </div>
         </div>
-        {/* Sort control */}
-        <div style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0',padding:isMobile?'8px 12px':'8px 24px',display:'flex',alignItems:'center',gap:'8px'}}>
-          <span style={{fontSize:'11px',fontWeight:'600',color:'#64748b'}}>Sort by</span>
-          <select value={systemsOutSort} onChange={e=>setSystemsOutSort(e.target.value as any)} style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer'}}>
-            <option value='recent'>Most Recent</option>
-            <option value='state'>State</option>
-            <option value='rm'>RM Region</option>
-            <option value='property'>Property</option>
-          </select>
+        {/* Sort + filter control */}
+        <div style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0',padding:isMobile?'8px 12px':'8px 24px',display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap' as any}}>
+          <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+            <span style={{fontSize:'11px',fontWeight:'600',color:'#64748b'}}>Sort by</span>
+            <select value={systemsOutSort} onChange={e=>setSystemsOutSort(e.target.value as any)} style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer'}}>
+              <option value='recent'>Most Recent</option>
+              <option value='state'>State</option>
+              <option value='rm'>RM Region</option>
+              <option value='property'>Property</option>
+            </select>
+          </div>
+          {seesAllProperties && (
+            <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap' as any}}>
+              <span style={{fontSize:'11px',fontWeight:'600',color:'#64748b'}}>Filter by</span>
+              <select value={systemsOutFilterType} onChange={e=>{ setSystemsOutFilterType(e.target.value as any); setSystemsOutFilterValue('all') }} style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer'}}>
+                <option value='state'>State</option>
+                <option value='rm'>RM Region</option>
+                <option value='rsm'>RSM Region</option>
+              </select>
+              {systemsOutFilterType==='state' ? (
+                <select value={systemsOutFilterValue} onChange={e=>setSystemsOutFilterValue(e.target.value)} style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer',minWidth:'130px'}}>
+                  <option value='all'>All States</option>
+                  {states.map(s=><option key={s} value={s}>{abbr(s)} — {s}</option>)}
+                </select>
+              ) : systemsOutFilterType==='rm' ? (
+                <select value={systemsOutFilterValue} onChange={e=>setSystemsOutFilterValue(e.target.value)} style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer',minWidth:'150px'}}>
+                  <option value='all'>All RM Regions</option>
+                  {rms.map(r=><option key={r} value={r}>{r}</option>)}
+                </select>
+              ) : (
+                <select value={systemsOutFilterValue} onChange={e=>setSystemsOutFilterValue(e.target.value)} style={{padding:'6px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'12px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer',minWidth:'150px'}}>
+                  <option value='all'>All RSM Regions</option>
+                  {rsms.map(r=><option key={r} value={r}>{r}</option>)}
+                </select>
+              )}
+            </div>
+          )}
         </div>
         {/* Body */}
         <div style={{flex:1,overflowY:'auto',padding:isMobile?'12px':'20px 24px'}}>
@@ -2236,7 +2277,7 @@ export default function Home() {
           {v:visibleProperties.filter((p:any)=>p.has_gate).length,                        l:'Gates',        c:'#7c3aed'},
           {v:visibleProperties.filter((p:any)=>p.has_elevator).length,                    l:'Elevators',    c:'#b45309'},
           {v:visibleProperties.filter((p:any)=>p.has_compactor).length,                   l:'Compactors',   c:'#0f766e'},
-          {v:systems.filter((s:any)=>{ const sp=properties.find((p:any)=>p.id===s.property_id); const vis=!isTeamMember||(sp&&myProps.includes(sp.id)); return vis&&getStatus(s.id)==='out-of-service' }).length, l:'Systems Out',  c:'#dc2626', click:true},
+          {v:systems.filter((s:any)=>{ const sp=properties.find((p:any)=>p.id===s.property_id); const vis=seesAllProperties||(sp&&myProps.includes(sp.id)); return vis&&getStatus(s.id)==='out-of-service' }).length, l:'Systems Out',  c:'#dc2626', click:true},
         ].map(s=>(
           <div key={s.l} onClick={()=>{ if((s as any).click) setSystemsOutOpen(true) }} style={{flexShrink:0,cursor:(s as any).click?'pointer':'default'}} title={(s as any).click?'View all systems out of service or under maintenance':undefined}>
             <div style={{fontSize:isMobile?'20px':'22px',fontWeight:'700',color:s.c}}>{s.v}</div>
