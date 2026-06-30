@@ -387,8 +387,9 @@ export default function Home() {
   const isTeamMember = userRole==='team_member'
   // Only RM, RSM, and admin may log site visits
   const canEditVisits = userRole==='rm' || userRole==='rsm' || userRole==='admin'
-  // Only RMs and RSMs score properties (admins don't do site visits)
-  const canScore = userRole==='rm' || userRole==='rsm'
+  // RMs, RSMs, and admins can enter/adjust scores. (Admin scores are still
+  // excluded from the property-card average, which stays an RM/RSM metric.)
+  const canScore = userRole==='rm' || userRole==='rsm' || userRole==='admin'
 
   // Days since the most recent visit to a property (null if never visited)
   const daysSinceVisit = (propId:string) => {
