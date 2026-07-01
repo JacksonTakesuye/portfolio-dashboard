@@ -1033,7 +1033,8 @@ export default function Home() {
   // Blocked while any system is out of service.
   const confirmHealth = async (prop:any) => {
     if(!prop) return
-    if(propertyOutages(prop.id).length>0){ showToast('Resolve the open outage before confirming.'); return }
+    const outs = propertyOutages(prop.id)
+    if(outs.length>0){ showToast('Still out of service: '+outs.map((s:any)=>s.name).join(', ')); return }
     setConfirmingHealth(prop.id)
     const confirmedAt = new Date().toISOString()
     const {data, error} = await supabase.from('health_confirmations')
@@ -1297,7 +1298,7 @@ export default function Home() {
                 <div style={{fontSize:'12px',fontWeight:'700',color:'#1e293b'}}>System Health</div>
                 <div style={{fontSize:'11px',color:statusColor,fontWeight:'600',marginTop:'2px'}}>
                   {outages.length>0
-                    ? outages.length+' system'+(outages.length>1?'s':'')+' out of service'
+                    ? outages.length+' system'+(outages.length>1?'s':'')+' out of service: '+outages.map((s:any)=>s.name).join(', ')
                     : conf
                       ? 'Confirmed healthy '+(daysSince===0?'today':daysSince===1?'1 day ago':daysSince+' days ago')
                       : 'Not yet confirmed'}
@@ -1312,7 +1313,7 @@ export default function Home() {
               )}
             </div>
             {canConfirm && outages.length>0 && (
-              <div style={{fontSize:'10px',color:'#b91c1c',marginTop:'6px'}}>Resolve the outage in the Systems tab, then confirm.</div>
+              <div style={{fontSize:'10px',color:'#b91c1c',marginTop:'6px'}}>Still out of service: {outages.map((s:any)=>s.name).join(', ')}. Set {outages.length>1?'them':'it'} back to In Service in the Systems tab, then confirm.</div>
             )}
           </div>
         )
