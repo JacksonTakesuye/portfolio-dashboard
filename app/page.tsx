@@ -2652,15 +2652,31 @@ export default function Home() {
                 ))}
               </div>
             </div>
-            {form.status!=='in-service' && (
+            {form.status!=='in-service' && (()=>{
+              const opts = REASONS[modal.system_type]||[]
+              const selected = (form.reason||'').split(', ').map(s=>s.trim()).filter(Boolean)
+              const toggle = (r:string)=>{
+                const next = selected.includes(r) ? selected.filter(x=>x!==r) : [...selected, r]
+                const ordered = opts.filter(o=>next.includes(o)) // keep canonical order
+                setForm(f=>({...f, reason: ordered.join(', ')}))
+              }
+              return (
               <div style={{marginBottom:'12px'}}>
-                <div style={{fontSize:'12px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Reason</div>
-                <select value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} style={{width:'100%',padding:'8px 10px',borderRadius:'7px',border:'1px solid #e2e8f0',fontSize:'13px'}}>
-                  <option value=''>Select reason...</option>
-                  {(REASONS[modal.system_type]||[]).map((r:string)=><option key={r}>{r}</option>)}
-                </select>
+                <div style={{fontSize:'12px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Reason{selected.length>1?'s':''} <span style={{fontWeight:'400',color:'#94a3b8'}}>(select all that apply)</span></div>
+                <div style={{display:'flex',flexDirection:'column',gap:'2px',border:'1px solid #e2e8f0',borderRadius:'7px',padding:'6px 4px'}}>
+                  {opts.map((r:string)=>{
+                    const on = selected.includes(r)
+                    return (
+                      <label key={r} style={{display:'flex',alignItems:'center',gap:'8px',padding:'5px 8px',borderRadius:'5px',cursor:'pointer',background:on?'#eff6ff':'transparent'}}>
+                        <input type='checkbox' checked={on} onChange={()=>toggle(r)}/>
+                        <span style={{fontSize:'13px',color:'#334155'}}>{r}</span>
+                      </label>
+                    )
+                  })}
+                </div>
               </div>
-            )}
+              )
+            })()}
             <div style={{marginBottom:'12px'}}>
               <div style={{fontSize:'12px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Notes</div>
               <textarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} style={{width:'100%',padding:'8px 10px',borderRadius:'7px',border:'1px solid #e2e8f0',fontSize:'13px',minHeight:'68px',resize:'vertical' as any,boxSizing:'border-box' as any}}/>
