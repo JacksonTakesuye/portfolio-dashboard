@@ -2143,9 +2143,10 @@ export default function Home() {
             const isEdit  = a.type==='psr-edited'
             const isBack  = a.type==='in-service'
             const isHealth= a.type==='health-3day' || a.type==='health-5day'
-            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':isBack?'#16a34a':isHealth?'#d97706':'#0369a1'
-            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':isBack?'#f0fdf4':isHealth?'#fffbeb':'#eff6ff'
-            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':isBack?'Back In Service':a.type==='health-5day'?'Health Check Overdue':isHealth?'Health Check Due':'PSR Submitted'
+            const isCsr   = a.type==='csr-3day' || a.type==='csr-7day' || a.type==='csr-10day'
+            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':isBack?'#16a34a':isHealth?'#d97706':isCsr?'#dc2626':'#0369a1'
+            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':isBack?'#f0fdf4':isHealth?'#fffbeb':isCsr?'#fef2f2':'#eff6ff'
+            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':isBack?'Back In Service':a.type==='health-5day'?'Health Check Overdue':isHealth?'Health Check Due':a.type==='csr-10day'?'Service Issue — Urgent':a.type==='csr-7day'?'Service Issue — Escalated':isCsr?'Service Issue Open':'PSR Submitted'
             const dateStr = a.created_at
               ? new Date(a.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
               : ''
