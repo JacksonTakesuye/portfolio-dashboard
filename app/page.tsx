@@ -192,6 +192,7 @@ export default function Home() {
   const [healthConfirmations, setHealthConfirmations] = useState<Record<string,any>>({})
   const [healthLog,           setHealthLog]           = useState<Record<string,any[]>>({})
   const [showHealthLog,       setShowHealthLog]       = useState(false)
+  const [healthLogMonth,      setHealthLogMonth]      = useState('all')
   const [confirmingHealth,    setConfirmingHealth]    = useState<string|null>(null)
   const [dragOver,      setDragOver]       = useState<string|null>(null)
   const [uploading,     setUploading]      = useState<string|null>(null)
@@ -1337,16 +1338,33 @@ export default function Home() {
               <div style={{fontSize:'10px',color:'#b91c1c',marginTop:'6px'}}>Still out of service: {outages.map((s:any)=>s.name).join(', ')}. Set {outages.length>1?'them':'it'} back to In Service in the Systems tab, then confirm.</div>
             )}
             {(()=>{
-              const log = healthLog[detailProp.id]||[]
-              if(log.length===0) return null
+              const allLog = healthLog[detailProp.id]||[]
+              // Display window: most recent 3 months only (older entries remain in the database for audit)
+              const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth()-3)
+              const recent = allLog.filter((c:any)=> new Date(c.confirmed_at) >= cutoff)
+              if(recent.length===0) return null
+              const monthKey = (ts:string)=>{ const d=new Date(ts); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0') }
+              const monthLabel = (key:string)=>{ const [y,m]=key.split('-'); return new Date(Number(y),Number(m)-1,1).toLocaleString('en-US',{month:'long',year:'numeric'}) }
+              const months = Array.from(new Set(recent.map((c:any)=>monthKey(c.confirmed_at))))
+              const activeMonth = months.includes(healthLogMonth) ? healthLogMonth : 'all'
+              const shown = activeMonth==='all' ? recent : recent.filter((c:any)=>monthKey(c.confirmed_at)===activeMonth)
               return (
                 <div style={{marginTop:'8px',borderTop:'1px solid '+border,paddingTop:'6px'}}>
-                  <button onClick={()=>setShowHealthLog(v=>!v)} style={{background:'none',border:'none',padding:0,cursor:'pointer',fontSize:'10px',fontWeight:'700',color:'#64748b'}}>
-                    {showHealthLog?'▾':'▸'} Confirmation log ({log.length})
-                  </button>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px'}}>
+                    <button onClick={()=>setShowHealthLog(v=>!v)} style={{background:'none',border:'none',padding:0,cursor:'pointer',fontSize:'10px',fontWeight:'700',color:'#64748b'}}>
+                      {showHealthLog?'▾':'▸'} Confirmation log ({recent.length})
+                    </button>
+                    {showHealthLog && months.length>1 && (
+                      <select value={activeMonth} onChange={e=>setHealthLogMonth(e.target.value)} style={{fontSize:'10px',padding:'2px 4px',borderRadius:'4px',border:'1px solid #e2e8f0',color:'#334155',background:'#fff',cursor:'pointer'}}>
+                        <option value='all'>All months</option>
+                        {months.map(mk=><option key={mk} value={mk}>{monthLabel(mk)}</option>)}
+                      </select>
+                    )}
+                  </div>
                   {showHealthLog && (
-                    <div style={{marginTop:'4px',maxHeight:'140px',overflowY:'auto'}}>
-                      {log.map((c:any,i:number)=>(
+                    <div style={{marginTop:'4px',maxHeight:'160px',overflowY:'auto'}}>
+                      {shown.length===0 && <div style={{fontSize:'10px',color:'#94a3b8',padding:'2px 0'}}>No confirmations this month.</div>}
+                      {shown.map((c:any,i:number)=>(
                         <div key={c.id||i} style={{fontSize:'10px',color:'#475569',padding:'2px 0'}}>
                           <span style={{fontWeight:'600',color:'#334155'}}>{c.confirmed_by||'—'}</span> · {fmtDateTime(c.confirmed_at)}
                         </div>
