@@ -225,6 +225,7 @@ export default function Home() {
   const [expandedVisit, setExpandedVisit] = useState<number|null>(null)
   // ─── Role / access state (Phase C) ───
   const [userRole,      setUserRole]       = useState<string|null>(null)
+  const [viewAsRole,    setViewAsRole]     = useState<string|null>(null)
   const [myProps,       setMyProps]        = useState<string[]>([])
   const [userName,      setUserName]       = useState<string>('')
   const [userEmail,     setUserEmail]      = useState<string>('')
@@ -456,22 +457,29 @@ export default function Home() {
   const propHasIssue = (prop:any) => systems.filter((s:any)=>s.property_id===prop.id).some((s:any)=>getStatus(s.id)==='out-of-service')
 
   // ─── Access helpers (Phase C) ───
+  // "View as" preview: a real admin can preview another role's view. This is VISUAL ONLY —
+  // identity and any writes still record as the real admin. Property-scoped roles (CM/SM/Team)
+  // preview against The Preserve (tx1). effRole/effProps drive what the UI shows.
+  const isRealAdmin = userRole==='admin'
+  const effRole  = (isRealAdmin && viewAsRole) ? viewAsRole : userRole
+  const effProps = (isRealAdmin && viewAsRole) ? ['tx1'] : myProps
+
   // canEdit: admin edits anything; everyone else edits only assigned properties.
   const canEdit = (propId:string|undefined|null) => {
     if(!propId) return false
-    if(userRole==='admin') return true
-    return myProps.includes(propId)
+    if(effRole==='admin') return true
+    return effProps.includes(propId)
   }
-  const isTeamMember = userRole==='team_member'
+  const isTeamMember = effRole==='team_member'
   // On-site roles (CM, SM, Team Member) only ever see their assigned properties.
-  const restrictedToAssigned = userRole==='team_member' || userRole==='cm' || userRole==='sm'
+  const restrictedToAssigned = effRole==='team_member' || effRole==='cm' || effRole==='sm'
   // Admins, RMs, and RSMs can see the whole portfolio (e.g. all systems out).
-  const seesAllProperties = userRole==='admin' || userRole==='rm' || userRole==='rsm'
+  const seesAllProperties = effRole==='admin' || effRole==='rm' || effRole==='rsm'
   // Only RM, RSM, and admin may log site visits
-  const canEditVisits = userRole==='rm' || userRole==='rsm' || userRole==='admin'
+  const canEditVisits = effRole==='rm' || effRole==='rsm' || effRole==='admin'
   // RMs, RSMs, and admins can enter/adjust scores. (Admin scores are still
   // excluded from the property-card average, which stays an RM/RSM metric.)
-  const canScore = userRole==='rm' || userRole==='rsm' || userRole==='admin'
+  const canScore = effRole==='rm' || effRole==='rsm' || effRole==='admin'
 
   // Days since the most recent visit to a property (null if never visited)
   const daysSinceVisit = (propId:string) => {
@@ -1109,7 +1117,7 @@ export default function Home() {
   const rms = [...new Set(properties.map((p:any)=>p.rm).filter(Boolean))].sort()
   const rsms = [...new Set(properties.map((p:any)=>p.rsm).filter(Boolean))].sort()
   // Team Members see only their assigned properties; everyone else sees all.
-  const visibleProperties = restrictedToAssigned ? properties.filter((p:any)=>myProps.includes(p.id)) : properties
+  const visibleProperties = restrictedToAssigned ? properties.filter((p:any)=>effProps.includes(p.id)) : properties
   const filtered = visibleProperties.filter((p:any)=>{
     const tabOk = tab==='all'||(tab==='elevators'&&p.has_elevator)||(tab==='compactors'&&p.has_compactor)||(tab==='pools'&&p.has_pool)||(tab==='gates'&&p.has_gate)
     // State and RM filters are independent — whichever filter type is active is the one applied.
@@ -1131,9 +1139,9 @@ export default function Home() {
       ? new Date(b.report_date).getTime()-new Date(a.report_date).getTime()
       : new Date(a.report_date).getTime()-new Date(b.report_date).getTime())
   // Alerts the current user is allowed to see (admin: all; others: only assigned properties)
-  const visibleAlerts = userRole==='admin'
+  const visibleAlerts = effRole==='admin'
     ? alertLog
-    : alertLog.filter((a:any)=> a.property_id ? myProps.includes(a.property_id) : false)
+    : alertLog.filter((a:any)=> a.property_id ? effProps.includes(a.property_id) : false)
 
   const TABS        = [['all','All'],['elevators','Elevators'],['compactors','Compactors'],['pools','Pools'],['gates','Gates']]
   const DETAIL_TABS = [['systems','Systems'],['psr','PSR Report'],['sysinfo','System Info'],['documents','Documents'],['visits','Site Visits']]
@@ -1274,7 +1282,7 @@ export default function Home() {
 
   // Small admin-only trash icon. Shows only for admins; opens the confirm modal.
   const TrashBtn = (label:string, run:()=>Promise<void>, size:number=14) => {
-    if(userRole!=='admin') return null
+    if(effRole!=='admin') return null
     return (
       <button
         onClick={(e)=>{ e.stopPropagation(); askDelete(label, run) }}
@@ -1301,7 +1309,7 @@ export default function Home() {
         const outages = propertyOutages(detailProp.id)
         const conf = healthConfirmations[detailProp.id]
         const daysSince = conf ? Math.floor((Date.now()-new Date(conf.confirmed_at).getTime())/86400000) : null
-        const canConfirm = userRole==='admin' || ((userRole==='cm'||userRole==='sm') && myProps.includes(detailProp.id))
+        const canConfirm = effRole==='admin' || ((effRole==='cm'||effRole==='sm') && effProps.includes(detailProp.id))
         const doneToday = confirmedToday(detailProp.id)
         const overdue = daysSince==null || daysSince>=3
         const statusColor = outages.length>0 ? '#dc2626' : (daysSince==null ? '#d97706' : daysSince>=5 ? '#dc2626' : daysSince>=3 ? '#d97706' : '#16a34a')
@@ -1637,7 +1645,7 @@ export default function Home() {
                           <div style={{display:'flex',gap:'6px',marginTop:'8px',alignItems:'center'}}>
                             {editable && <button onClick={()=>openEditPsr(r)} style={{flex:1,padding:'6px',background:'#f1f5f9',color:'#334155',border:'1px solid #e2e8f0',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>Edit This Report</button>}
                             <button onClick={()=>openVersions(r)} style={{flex:1,padding:'6px',background:'#eff6ff',color:'#2563eb',border:'1px solid #bfdbfe',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>See Prior Versions</button>
-                            {userRole==='admin' && <button onClick={()=>askDelete('Delete the PSR report dated '+r.report_date+'? This also removes its photos and version history. This cannot be undone.', ()=>deletePsrReport(r))} title='Delete (admin)' style={{padding:'6px 10px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>🗑️</button>}
+                            {effRole==='admin' && <button onClick={()=>askDelete('Delete the PSR report dated '+r.report_date+'? This also removes its photos and version history. This cannot be undone.', ()=>deletePsrReport(r))} title='Delete (admin)' style={{padding:'6px 10px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'11px',fontWeight:'600',cursor:'pointer'}}>🗑️</button>}
                           </div>
                         </div>
                       )}
@@ -2175,7 +2183,7 @@ export default function Home() {
                                 {uploadingVisitDoc===v.id?'Uploading...':'+ Add Document / Photo'}
                                 <input type='file' style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0]; if(f) uploadVisitDoc(v,f); e.target.value=''}}/>
                               </label>
-                              {userRole==='admin' && <button onClick={()=>askDelete('Delete the site visit from '+v.visit_date+' by '+(v.visitor||'—')+'? This also removes its documents. This cannot be undone.', ()=>deleteSiteVisit(v))} title='Delete (admin)' style={{padding:'6px 10px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>🗑️</button>}
+                              {effRole==='admin' && <button onClick={()=>askDelete('Delete the site visit from '+v.visit_date+' by '+(v.visitor||'—')+'? This also removes its documents. This cannot be undone.', ()=>deleteSiteVisit(v))} title='Delete (admin)' style={{padding:'6px 10px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:'6px',fontSize:'10px',fontWeight:'600',cursor:'pointer'}}>🗑️</button>}
                             </div>
                           )}
                         </div>
@@ -2195,7 +2203,7 @@ export default function Home() {
   const renderAlerts = () => (
     <div style={{flex:1,overflowY:'auto',padding:'12px',paddingBottom:'80px'}}>
       <div style={{fontWeight:'700',fontSize:'15px',color:'#1e293b',marginBottom:'4px'}}>Alerts</div>
-      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>{userRole==='admin'?'Last 50 events across all properties':'Recent events for your properties'}</div>
+      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>{effRole==='admin'?'Last 50 events across all properties':'Recent events for your properties'}</div>
       {visibleAlerts.length===0
         ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'13px',padding:'40px 0'}}>No alerts yet.</div>
         : visibleAlerts.map((a:any, i:number)=>{
@@ -2245,7 +2253,7 @@ export default function Home() {
       .filter(Boolean) as any[]
 
     // Visibility: admins, RMs, and RSMs see all outages; on-site roles (CM/SM/Team) only their assigned properties.
-    const scoped = seesAllProperties ? rows : rows.filter((r:any)=> myProps.includes(r.prop.id))
+    const scoped = seesAllProperties ? rows : rows.filter((r:any)=> effProps.includes(r.prop.id))
 
     // Optional filter (only for the portfolio-wide viewers) — by State, RM, or RSM, mirroring the main portfolio filter.
     const visibleRows = !seesAllProperties ? scoped : scoped.filter((r:any)=>{
@@ -2409,6 +2417,14 @@ export default function Home() {
   return (
     <div style={{fontFamily:'system-ui',background:'#f1f5f9',minHeight:'100vh'}}>
 
+      {/* ── View-as preview banner ── */}
+      {isRealAdmin && viewAsRole && (
+        <div style={{position:'sticky',top:0,zIndex:500,background:'#f59e0b',color:'#1e293b',padding:'8px 16px',display:'flex',alignItems:'center',justifyContent:'center',gap:'12px',fontSize:'12px',fontWeight:'700'}}>
+          <span>👁️ Previewing as {ROLE_LABELS[viewAsRole]||viewAsRole}{restrictedToAssigned?' — The Preserve':''} · view only, actions still record as you</span>
+          <button onClick={()=>{ setViewAsRole(null); setSelectedProp(null) }} style={{background:'#1e293b',color:'#fff',border:'none',borderRadius:'6px',padding:'4px 12px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>Exit preview</button>
+        </div>
+      )}
+
       {/* ── Header ── */}
       <div style={{background:'#0f172a',padding:isMobile?'12px 16px':'14px 24px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
@@ -2435,7 +2451,19 @@ export default function Home() {
               {enablingNotif?'Enabling...':'🔔 Enable Notifications'}
             </button>
           )}
-          {!isMobile && userRole==='admin' && (
+          {!isMobile && isRealAdmin && (
+            <select value={viewAsRole||'admin'} onChange={e=>{ setViewAsRole(e.target.value==='admin'?null:e.target.value); setSelectedProp(null) }}
+              title='Preview the app as another role (visual only)'
+              style={{background:viewAsRole?'#fde68a':'rgba(255,255,255,0.1)',color:viewAsRole?'#92400e':'#f8fafc',border:'1px solid '+(viewAsRole?'#f59e0b':'rgba(255,255,255,0.2)'),borderRadius:'7px',padding:'7px 10px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>
+              <option value='admin'>View as: Admin</option>
+              <option value='rm'>View as: RM</option>
+              <option value='rsm'>View as: RSM</option>
+              <option value='cm'>View as: CM</option>
+              <option value='sm'>View as: SM</option>
+              <option value='team_member'>View as: Team Member</option>
+            </select>
+          )}
+          {!isMobile && effRole==='admin' && (
             <button
               onClick={()=>setEmailPanelOpen(true)}
               title='Send an email to team members'
@@ -2462,7 +2490,7 @@ export default function Home() {
           {v:visibleProperties.filter((p:any)=>p.has_gate).length,                        l:'Gates',        c:'#7c3aed'},
           {v:visibleProperties.filter((p:any)=>p.has_elevator).length,                    l:'Elevators',    c:'#b45309'},
           {v:visibleProperties.filter((p:any)=>p.has_compactor).length,                   l:'Compactors',   c:'#0f766e'},
-          {v:systems.filter((s:any)=>{ const sp=properties.find((p:any)=>p.id===s.property_id); const vis=seesAllProperties||(sp&&myProps.includes(sp.id)); return vis&&getStatus(s.id)==='out-of-service' }).length, l:'Systems Out',  c:'#dc2626', click:true},
+          {v:systems.filter((s:any)=>{ const sp=properties.find((p:any)=>p.id===s.property_id); const vis=seesAllProperties||(sp&&effProps.includes(sp.id)); return vis&&getStatus(s.id)==='out-of-service' }).length, l:'Systems Out',  c:'#dc2626', click:true},
         ].map(s=>(
           <div key={s.l} onClick={()=>{ if((s as any).click) setSystemsOutOpen(true) }} style={{flexShrink:0,cursor:(s as any).click?'pointer':'default'}} title={(s as any).click?'View all systems out of service or under maintenance':undefined}>
             <div style={{fontSize:isMobile?'20px':'22px',fontWeight:'700',color:s.c}}>{s.v}</div>
@@ -2612,7 +2640,24 @@ export default function Home() {
                 </button>
               )}
             </div>
-            {userRole==='admin' && (
+            {isRealAdmin && (
+              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'16px',marginTop:'12px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+                  <span style={{fontSize:'18px'}}>👁️</span>
+                  <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>View As</div>
+                </div>
+                <div style={{fontSize:'12px',color:'#64748b',lineHeight:1.5,marginBottom:'12px'}}>Preview the app as another role for troubleshooting (visual only — your actions still record as you). Property-scoped roles preview against The Preserve.</div>
+                <select value={viewAsRole||'admin'} onChange={e=>{ setViewAsRole(e.target.value==='admin'?null:e.target.value); setSelectedProp(null) }} style={{width:'100%',padding:'10px',borderRadius:'8px',border:'1px solid #e2e8f0',fontSize:'13px',background:'#fff'}}>
+                  <option value='admin'>Admin (your role)</option>
+                  <option value='rm'>Regional Manager</option>
+                  <option value='rsm'>Regional Service Manager</option>
+                  <option value='cm'>Community Manager</option>
+                  <option value='sm'>Service Manager</option>
+                  <option value='team_member'>Team Member</option>
+                </select>
+              </div>
+            )}
+            {effRole==='admin' && (
               <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'16px',marginTop:'12px'}}>
                 <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
                   <span style={{fontSize:'18px'}}>✉️</span>
@@ -2883,7 +2928,7 @@ export default function Home() {
       )}
 
       {/* ── Photo viewer (full size) ── */}
-      {emailPanelOpen && userRole==='admin' && (()=>{
+      {emailPanelOpen && effRole==='admin' && (()=>{
         const recips = emailRecipients()
         const roleLabel = (r:string)=> r==='rm'?'RM':r==='rsm'?'RSM':r==='cm'?'CM':r==='sm'?'SM':r==='team_member'?'Team Member':r==='admin'?'Admin':r
         return (
