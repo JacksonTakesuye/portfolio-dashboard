@@ -585,7 +585,7 @@ export default function Home() {
 
   const openModal = (sys:any) => {
     const current = statuses[sys.id]
-    setForm({status:current?.status||'in-service', reason:current?.reason||'', notes:current?.notes||'', reportedBy:'', affected_units:current?.affected_units||''})
+    setForm({status:current?.status||'in-service', reason:'', notes:'', reportedBy:'', affected_units:''})
     setModal(sys)
   }
 
@@ -1380,6 +1380,7 @@ export default function Home() {
       {/* Systems tab */}
       {detailTab==='systems' && (
         <div>
+          <div style={{fontWeight:'700',fontSize:'13px',color:'#1e293b',marginBottom:'10px'}}>Critical Service</div>
           {propSystems.length===0
             ? <div style={{fontSize:'12px',color:'#94a3b8'}}>No systems tracked.</div>
             : propSystems.map((sys:any)=>{
@@ -2709,7 +2710,7 @@ export default function Home() {
               <div style={{fontSize:'12px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Status</div>
               <div style={{display:'flex',gap:'6px'}}>
                 {(['in-service','out-of-service','maintenance'] as const).map(s=>(
-                  <button key={s} onClick={()=>setForm(f=>({...f,status:s,reason:'',affected_units:''}))} style={{flex:1,padding:'7px 4px',borderRadius:'7px',fontSize:'11px',fontWeight:'600',cursor:'pointer',border:form.status===s?'2px solid '+STATUS_META[s].color:'1px solid #e2e8f0',background:form.status===s?STATUS_META[s].bg:'#f8fafc',color:form.status===s?STATUS_META[s].color:'#64748b'}}>
+                  <button key={s} onClick={()=>setForm(f=>({...f,status:s,reason:'',notes:'',affected_units:''}))} style={{flex:1,padding:'7px 4px',borderRadius:'7px',fontSize:'11px',fontWeight:'600',cursor:'pointer',border:form.status===s?'2px solid '+STATUS_META[s].color:'1px solid #e2e8f0',background:form.status===s?STATUS_META[s].bg:'#f8fafc',color:form.status===s?STATUS_META[s].color:'#64748b'}}>
                     {STATUS_META[s].label}
                   </button>
                 ))}
