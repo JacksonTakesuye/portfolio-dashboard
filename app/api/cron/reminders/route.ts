@@ -252,7 +252,7 @@ export async function GET(request: Request) {
   //   10+ days → Paul Mashni (highest level)
   const [{ data: sysRows }, { data: suRows }] = await Promise.all([
     supabase.from('systems').select('id, property_id, name'),
-    supabase.from('status_updates').select('system_id, status, reason, created_at').order('created_at', { ascending: true }),
+    supabase.from('status_updates').select('system_id, status, reason, affected_units, created_at').order('created_at', { ascending: true }),
   ])
   const allSystems: any[] = sysRows || []
 
@@ -279,10 +279,12 @@ export async function GET(request: Request) {
     const prop = properties.find((p) => p.id === sys.property_id)
     if (!prop) continue
     const reason = runStart.reason || latest.reason || 'not specified'
+    const affected = runStart.affected_units || latest.affected_units || ''
+    const label = affected || sys.name // name specific elevators when applicable
     const tag = ':' + sys.id + ':' + runStartMs // unique per outage run + system
 
     const footer = '<p style="color:#64748b">&mdash; PEM Portfolio Systems Dashboard</p>'
-    const line = '<p><strong>' + sys.name + '</strong> at <strong>' + prop.name +
+    const line = '<p><strong>' + label + '</strong> at <strong>' + prop.name +
       '</strong> has been out of service for ' + daysOpen + ' day' + (daysOpen === 1 ? '' : 's') + '.</p>' +
       '<p>Reason: ' + reason + '</p>'
 
@@ -290,7 +292,7 @@ export async function GET(request: Request) {
     if (daysOpen >= 10 && !(await alreadyReminded(prop.id, 'csr10' + tag, 100000))) {
       const html = line + '<p><strong>Highest-level escalation.</strong> This service issue has remained open for 10 or more days and requires immediate attention.</p>' + footer
       summary.csr10 += await sendEmail([emailOf('Paul Mashni')], 'URGENT: Service Issue Open ' + daysOpen + ' Days - ' + prop.name, html)
-      await logAlert('csr-10day', prop.id, prop.name, sys.name + ' out of service ' + daysOpen + ' days — escalated to Paul Mashni')
+      await logAlert('csr-10day', prop.id, prop.name, label + ' out of service ' + daysOpen + ' days — escalated to Paul Mashni')
       await logReminder(prop.id, 'csr10' + tag)
     }
 
@@ -298,7 +300,7 @@ export async function GET(request: Request) {
     if (daysOpen >= 7 && !(await alreadyReminded(prop.id, 'csr7' + tag, 100000))) {
       const html = line + '<p>This service issue has been open for 7 or more days and requires escalation. Please review and ensure resolution is underway.</p>' + footer
       summary.csr7 += await sendEmail([emailOf('Alicia Bush'), emailOf('Colson Franse')], 'Escalation: Service Issue Open ' + daysOpen + ' Days - ' + prop.name, html)
-      await logAlert('csr-7day', prop.id, prop.name, sys.name + ' out of service ' + daysOpen + ' days — escalated to Alicia Bush & Colson Franse')
+      await logAlert('csr-7day', prop.id, prop.name, label + ' out of service ' + daysOpen + ' days — escalated to Alicia Bush & Colson Franse')
       await logReminder(prop.id, 'csr7' + tag)
     }
 
@@ -306,7 +308,7 @@ export async function GET(request: Request) {
     if (daysOpen >= 3 && !(await alreadyReminded(prop.id, 'csr3' + tag, 100000))) {
       const html = line + '<p>Please coordinate resolution with the on-site team.</p>' + footer
       summary.csr3 += await sendEmail([emailOf(prop.rm), emailOf(prop.rsm)], 'Service Issue Open ' + daysOpen + ' Days - ' + prop.name, html)
-      await logAlert('csr-3day', prop.id, prop.name, sys.name + ' out of service ' + daysOpen + ' days — RM/RSM notified')
+      await logAlert('csr-3day', prop.id, prop.name, label + ' out of service ' + daysOpen + ' days — RM/RSM notified')
       await logReminder(prop.id, 'csr3' + tag)
     }
   }

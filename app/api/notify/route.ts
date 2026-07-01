@@ -14,20 +14,23 @@ export async function POST(request: Request) {
     process.env.VAPID_PRIVATE_KEY!
   )
 
-  const { type, systemName, propertyName, propertyId, reason, reportDate, noteAuthor, noteText, editedBy, changeSummary } = await request.json()
+  const { type, systemName, propertyName, propertyId, reason, reportDate, noteAuthor, noteText, editedBy, changeSummary, affectedUnits } = await request.json()
+
+  // For elevators with specific units affected, name them instead of the generic system.
+  const subj = affectedUnits ? affectedUnits : systemName
 
   let title = ''
   let body  = ''
 
   if (type === 'out-of-service') {
     title = 'System Alert - ' + propertyName
-    body  = systemName + ' is Out of Service' + (reason ? ': ' + reason : '')
+    body  = subj + ' is Out of Service' + (reason ? ': ' + reason : '')
   } else if (type === 'maintenance') {
     title = 'Maintenance Alert - ' + propertyName
-    body  = systemName + ' has been marked Under Maintenance' + (reason ? ': ' + reason : '')
+    body  = subj + ' has been marked Under Maintenance' + (reason ? ': ' + reason : '')
   } else if (type === 'in-service') {
     title = 'Back In Service - ' + propertyName
-    body  = systemName + ' is back In Service'
+    body  = subj + ' is back In Service'
   } else if (type === 'psr-submitted') {
     title = 'New PSR Report - ' + propertyName
     body  = 'A new PSR report was submitted for ' + propertyName + (reportDate ? ' on ' + reportDate : '')

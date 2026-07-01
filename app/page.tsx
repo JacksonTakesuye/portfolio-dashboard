@@ -177,7 +177,7 @@ export default function Home() {
   const [rmFilter,      setRmFilter]       = useState('all')
   const [rsmFilter,     setRsmFilter]      = useState('all')
   const [modal,         setModal]          = useState<any>(null)
-  const [form,          setForm]           = useState({status:'in-service',reason:'',notes:'',reportedBy:''})
+  const [form,          setForm]           = useState({status:'in-service',reason:'',notes:'',reportedBy:'',affected_units:''})
   const [saving,        setSaving]         = useState(false)
   const [toast,         setToast]          = useState<string|null>(null)
   const [psrForm,       setPsrForm]        = useState<any>({})
@@ -578,7 +578,7 @@ export default function Home() {
 
   const openModal = (sys:any) => {
     const current = statuses[sys.id]
-    setForm({status:current?.status||'in-service', reason:current?.reason||'', notes:current?.notes||'', reportedBy:''})
+    setForm({status:current?.status||'in-service', reason:current?.reason||'', notes:current?.notes||'', reportedBy:'', affected_units:current?.affected_units||''})
     setModal(sys)
   }
 
@@ -587,11 +587,11 @@ export default function Home() {
     setSaving(true)
     const createdAt = new Date().toISOString()
     const {data, error} = await supabase.from('status_updates')
-      .insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:actor()})
+      .insert({system_id:modal.id, status:form.status, reason:form.reason||null, notes:form.notes||null, reported_by:actor(), affected_units:(modal.system_type==='elevator'?(form.affected_units||null):null)})
       .select()
     if(error){ showToast('Error: '+error.message) }
     else {
-      const inserted = (data&&data[0]) || {system_id:modal.id,status:form.status,reason:form.reason||null,notes:form.notes||null,reported_by:actor(),created_at:createdAt}
+      const inserted = (data&&data[0]) || {system_id:modal.id,status:form.status,reason:form.reason||null,notes:form.notes||null,reported_by:actor(),affected_units:(modal.system_type==='elevator'?(form.affected_units||null):null),created_at:createdAt}
       setStatuses((prev:any)=>({...prev,[modal.id]:inserted}))
       // Prepend to history so the timeline reflects the change without a reload
       setStatusHistory((prev:any)=>({...prev,[modal.id]:[inserted,...(prev[modal.id]||[])]}))
@@ -600,7 +600,7 @@ export default function Home() {
       if(form.status==='out-of-service'||form.status==='maintenance'||form.status==='in-service'){
         const newAlert = {type:form.status, property_id:detailProp?.id||'', property_name:detailProp?.name||'', system_name:modal.name, reason:form.reason||null, created_at:createdAt}
         setAlertLog((prev:any)=>[newAlert,...prev])
-        await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status, systemName:modal.name, propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', reason:form.reason})})
+        await fetch('/api/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:form.status, systemName:modal.name, propertyName:detailProp?.name||'', propertyId:detailProp?.id||'', reason:form.reason, affectedUnits:(modal.system_type==='elevator'?form.affected_units:'')})})
       }
     }
     setSaving(false)
@@ -1359,6 +1359,7 @@ export default function Home() {
                         })()}
                       </div>
                     </div>
+                    {(statusKey==='out-of-service'||statusKey==='maintenance') && st?.affected_units && <div style={{fontSize:'11px',color:'#b91c1c',fontWeight:'700',marginBottom:'2px'}}>{st.affected_units}</div>}
                     {(statusKey==='out-of-service'||statusKey==='maintenance') && st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'4px'}}>{st.reason}</div>}
                     {(statusKey==='out-of-service'||statusKey==='maintenance') && st?.notes && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'6px'}}>{st.notes}</div>}
                     {editable && <button onClick={()=>openModal(sys)} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>Update Status</button>}
@@ -1387,6 +1388,7 @@ export default function Home() {
                                         {h.id && TrashBtn('Delete this status event ('+(hm.label)+', '+fmtDateTime(h.created_at)+')? This also removes its cost, vendor, and file records. This cannot be undone.', ()=>deleteStatusEvent(h.id, sys.id), 12)}
                                       </div>
                                     </div>
+                                    {h.affected_units && <div style={{fontSize:'10px',color:'#b91c1c',fontWeight:'700'}}>{h.affected_units}</div>}
                                     {h.reason && <div style={{fontSize:'10px',color:'#dc2626'}}>{h.reason}</div>}
                                     {h.notes  && <div style={{fontSize:'10px',color:'#64748b',fontStyle:'italic'}}>{h.notes}</div>}
                                     <div style={{fontSize:'10px',color:'#94a3b8',marginTop:'1px'}}>by {h.reported_by||'Staff'}</div>
@@ -1872,7 +1874,7 @@ export default function Home() {
                       // Non-pool types: only the requested fields, plus Save
                       let fields:any = null
                       if(t==='fire_life_safety') fields = SID('Annual Inspection (Date)','last_inspection',localForm,setLocalForm)
-                      else if(t==='elevator') fields = <>{SI('Manufacturer','manufacturer',localForm,setLocalForm)}{SID('Annual Inspection (Date)','last_inspection',localForm,setLocalForm)}</>
+                      else if(t==='elevator') fields = <>{SI('Manufacturer','manufacturer',localForm,setLocalForm)}<div style={{marginBottom:'6px'}}><div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>Number of Elevators</div><input type='number' min={1} value={localForm.elevator_count??''} onChange={e=>setLocalForm((p:any)=>({...p,elevator_count: e.target.value===''?null:Math.max(1,parseInt(e.target.value)||1)}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',boxSizing:'border-box' as any}}/></div>{SID('Annual Inspection (Date)','last_inspection',localForm,setLocalForm)}</>
                       else if(t==='compactor') fields = SI('Manufacturer','manufacturer',localForm,setLocalForm)
                       else if(t==='gate') fields = SI('Manufacturer','manufacturer',localForm,setLocalForm)
                       else fields = <>{SI('Model Number','model_number',localForm,setLocalForm)}{SI('Manufacturer','manufacturer',localForm,setLocalForm)}{SI('Year Installed','year_installed',localForm,setLocalForm)}{SI('Warranty Expiry','warranty_expiry',localForm,setLocalForm)}{SI('Last Inspection','last_inspection',localForm,setLocalForm)}{SI('Notes','notes',localForm,setLocalForm)}</>
@@ -2239,6 +2241,7 @@ export default function Home() {
                     {open && (
                       <div style={{padding:'10px 12px',borderTop:'1px solid #e2e8f0',background:'#fafafa'}}>
                         {/* Summary detail */}
+                        {r.st?.affected_units && <div style={{fontSize:'11px',color:'#b91c1c',fontWeight:'700',marginBottom:'2px'}}>{r.st.affected_units}</div>}
                         {r.st?.reason && <div style={{fontSize:'11px',color:'#dc2626',marginBottom:'3px'}}>Reason: {r.st.reason}</div>}
                         {r.st?.notes && <div style={{fontSize:'11px',color:'#64748b',fontStyle:'italic',marginBottom:'3px'}}>{r.st.notes}</div>}
                         <div style={{fontSize:'11px',color:'#475569',marginBottom:'3px'}}>Reported by {r.st?.reported_by||'—'} · {fmtDateTime(r.since)}</div>
@@ -2647,12 +2650,38 @@ export default function Home() {
               <div style={{fontSize:'12px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Status</div>
               <div style={{display:'flex',gap:'6px'}}>
                 {(['in-service','out-of-service','maintenance'] as const).map(s=>(
-                  <button key={s} onClick={()=>setForm(f=>({...f,status:s,reason:''}))} style={{flex:1,padding:'7px 4px',borderRadius:'7px',fontSize:'11px',fontWeight:'600',cursor:'pointer',border:form.status===s?'2px solid '+STATUS_META[s].color:'1px solid #e2e8f0',background:form.status===s?STATUS_META[s].bg:'#f8fafc',color:form.status===s?STATUS_META[s].color:'#64748b'}}>
+                  <button key={s} onClick={()=>setForm(f=>({...f,status:s,reason:'',affected_units:''}))} style={{flex:1,padding:'7px 4px',borderRadius:'7px',fontSize:'11px',fontWeight:'600',cursor:'pointer',border:form.status===s?'2px solid '+STATUS_META[s].color:'1px solid #e2e8f0',background:form.status===s?STATUS_META[s].bg:'#f8fafc',color:form.status===s?STATUS_META[s].color:'#64748b'}}>
                     {STATUS_META[s].label}
                   </button>
                 ))}
               </div>
             </div>
+            {form.status!=='in-service' && modal.system_type==='elevator' && (systemInfos[modal.id]?.elevator_count||0) > 1 && (()=>{
+              const count = systemInfos[modal.id].elevator_count
+              const units = Array.from({length:count},(_,i)=>'Elevator '+(i+1))
+              const selected = (form.affected_units||'').split(', ').map(s=>s.trim()).filter(Boolean)
+              const toggle = (u:string)=>{
+                const next = selected.includes(u) ? selected.filter(x=>x!==u) : [...selected,u]
+                const ordered = units.filter(x=>next.includes(x)) // keep canonical order
+                setForm(f=>({...f, affected_units: ordered.join(', ')}))
+              }
+              return (
+              <div style={{marginBottom:'12px'}}>
+                <div style={{fontSize:'12px',fontWeight:'600',color:'#334155',marginBottom:'6px'}}>Affected Elevator{selected.length>1?'s':''} <span style={{fontWeight:'400',color:'#94a3b8'}}>(select all that apply)</span></div>
+                <div style={{display:'flex',flexWrap:'wrap' as any,gap:'6px'}}>
+                  {units.map(u=>{
+                    const on = selected.includes(u)
+                    return (
+                      <label key={u} style={{display:'flex',alignItems:'center',gap:'6px',padding:'6px 10px',borderRadius:'6px',cursor:'pointer',border:'1px solid '+(on?'#3b82f6':'#e2e8f0'),background:on?'#eff6ff':'#fff'}}>
+                        <input type='checkbox' checked={on} onChange={()=>toggle(u)}/>
+                        <span style={{fontSize:'12px',fontWeight:'600',color:on?'#1d4ed8':'#334155'}}>{u}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+              )
+            })()}
             {form.status!=='in-service' && (()=>{
               const opts = REASONS[modal.system_type]||[]
               const selected = (form.reason||'').split(', ').map(s=>s.trim()).filter(Boolean)
