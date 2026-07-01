@@ -190,6 +190,8 @@ export default function Home() {
   const [uploadingEquip,setUploadingEquip] = useState<string|null>(null)
   // Latest "Systems Healthy" confirmation per property + in-progress flag
   const [healthConfirmations, setHealthConfirmations] = useState<Record<string,any>>({})
+  const [healthLog,           setHealthLog]           = useState<Record<string,any[]>>({})
+  const [showHealthLog,       setShowHealthLog]       = useState(false)
   const [confirmingHealth,    setConfirmingHealth]    = useState<string|null>(null)
   const [dragOver,      setDragOver]       = useState<string|null>(null)
   const [uploading,     setUploading]      = useState<string|null>(null)
@@ -328,6 +330,10 @@ export default function Home() {
         const hcm:Record<string,any>={}
         ;(healthrows||[]).forEach((h:any)=>{ if(!hcm[h.property_id]) hcm[h.property_id]=h })
         setHealthConfirmations(hcm)
+        // Full confirmation log per property (newest first, since rows are ordered desc)
+        const hlm:Record<string,any[]>={}
+        ;(healthrows||[]).forEach((h:any)=>{ (hlm[h.property_id]=hlm[h.property_id]||[]).push(h) })
+        setHealthLog(hlm)
         setEmailUsers((allusers||[]).filter((u:any)=>u.email))
         // Event costs keyed by status_update_id
         const cm:Record<number,any>={}
@@ -1029,10 +1035,17 @@ export default function Home() {
   const propertyOutages = (propId:string) =>
     systems.filter((s:any)=> s.property_id===propId && getStatus(s.id)==='out-of-service')
 
+  // True if this property was already confirmed healthy today (calendar day, local time)
+  const confirmedToday = (propId:string) => {
+    const c = healthConfirmations[propId]
+    return !!c && new Date(c.confirmed_at).toDateString() === new Date().toDateString()
+  }
+
   // Record a "Systems Healthy" confirmation (resets the property's reminder timer).
-  // Blocked while any system is out of service.
+  // Blocked while any system is out of service, or if already confirmed today.
   const confirmHealth = async (prop:any) => {
     if(!prop) return
+    if(confirmedToday(prop.id)){ showToast('Already confirmed today'); return }
     const outs = propertyOutages(prop.id)
     if(outs.length>0){ showToast('Still out of service: '+outs.map((s:any)=>s.name).join(', ')); return }
     setConfirmingHealth(prop.id)
@@ -1043,6 +1056,7 @@ export default function Home() {
     if(error){ showToast('Error: '+error.message); setConfirmingHealth(null); return }
     const row = (data&&data[0]) || {property_id:prop.id, confirmed_by:actor(), confirmed_at:confirmedAt}
     setHealthConfirmations((prev:any)=>({...prev,[prop.id]:row}))
+    setHealthLog((prev:any)=>({...prev,[prop.id]:[row,...(prev[prop.id]||[])]}))
     showToast('Systems confirmed healthy')
     setConfirmingHealth(null)
   }
@@ -1287,6 +1301,7 @@ export default function Home() {
         const conf = healthConfirmations[detailProp.id]
         const daysSince = conf ? Math.floor((Date.now()-new Date(conf.confirmed_at).getTime())/86400000) : null
         const canConfirm = userRole==='admin' || ((userRole==='cm'||userRole==='sm') && myProps.includes(detailProp.id))
+        const doneToday = confirmedToday(detailProp.id)
         const overdue = daysSince==null || daysSince>=3
         const statusColor = outages.length>0 ? '#dc2626' : (daysSince==null ? '#d97706' : daysSince>=5 ? '#dc2626' : daysSince>=3 ? '#d97706' : '#16a34a')
         const bg = outages.length>0 ? '#fef2f2' : (overdue ? '#fffbeb' : '#f0fdf4')
@@ -1306,15 +1321,41 @@ export default function Home() {
                 {conf && <div style={{fontSize:'9px',color:'#94a3b8',marginTop:'1px'}}>by {conf.confirmed_by}</div>}
               </div>
               {canConfirm && (
-                <button onClick={()=>confirmHealth(detailProp)} disabled={outages.length>0||confirmingHealth===detailProp.id}
-                  style={{padding:'8px 12px',background:outages.length>0?'#cbd5e1':'#16a34a',color:'#fff',border:'none',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:outages.length>0?'default':'pointer',whiteSpace:'nowrap' as any}}>
-                  {confirmingHealth===detailProp.id?'Saving...':'Systems Healthy'}
-                </button>
+                doneToday ? (
+                  <div style={{display:'flex',alignItems:'center',gap:'6px',background:'#dcfce7',color:'#15803d',border:'1px solid #86efac',borderRadius:'7px',padding:'8px 12px',fontSize:'12px',fontWeight:'700',whiteSpace:'nowrap' as any}}>
+                    ✓ Confirmed today
+                  </div>
+                ) : (
+                  <button onClick={()=>confirmHealth(detailProp)} disabled={outages.length>0||confirmingHealth===detailProp.id}
+                    style={{padding:'8px 12px',background:outages.length>0?'#cbd5e1':'#16a34a',color:'#fff',border:'none',borderRadius:'7px',fontSize:'12px',fontWeight:'700',cursor:outages.length>0?'default':'pointer',whiteSpace:'nowrap' as any}}>
+                    {confirmingHealth===detailProp.id?'Saving...':'Systems Healthy'}
+                  </button>
+                )
               )}
             </div>
             {canConfirm && outages.length>0 && (
               <div style={{fontSize:'10px',color:'#b91c1c',marginTop:'6px'}}>Still out of service: {outages.map((s:any)=>s.name).join(', ')}. Set {outages.length>1?'them':'it'} back to In Service in the Systems tab, then confirm.</div>
             )}
+            {(()=>{
+              const log = healthLog[detailProp.id]||[]
+              if(log.length===0) return null
+              return (
+                <div style={{marginTop:'8px',borderTop:'1px solid '+border,paddingTop:'6px'}}>
+                  <button onClick={()=>setShowHealthLog(v=>!v)} style={{background:'none',border:'none',padding:0,cursor:'pointer',fontSize:'10px',fontWeight:'700',color:'#64748b'}}>
+                    {showHealthLog?'▾':'▸'} Confirmation log ({log.length})
+                  </button>
+                  {showHealthLog && (
+                    <div style={{marginTop:'4px',maxHeight:'140px',overflowY:'auto'}}>
+                      {log.map((c:any,i:number)=>(
+                        <div key={c.id||i} style={{fontSize:'10px',color:'#475569',padding:'2px 0'}}>
+                          <span style={{fontWeight:'600',color:'#334155'}}>{c.confirmed_by||'—'}</span> · {fmtDateTime(c.confirmed_at)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
           </div>
         )
       })()}
