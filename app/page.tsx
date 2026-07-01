@@ -224,6 +224,16 @@ export default function Home() {
   const [userRole,      setUserRole]       = useState<string|null>(null)
   const [myProps,       setMyProps]        = useState<string[]>([])
   const [userName,      setUserName]       = useState<string>('')
+  const [userEmail,     setUserEmail]      = useState<string>('')
+  // Admin master-email composer
+  const [emailUsers,       setEmailUsers]       = useState<any[]>([])
+  const [emailPanelOpen,   setEmailPanelOpen]   = useState(false)
+  const [emailMode,        setEmailMode]        = useState<'group'|'individual'>('group')
+  const [emailGroup,       setEmailGroup]       = useState<'everyone'|'admins'|'rm_rsm'|'onsite'>('everyone')
+  const [emailSelectedIds, setEmailSelectedIds] = useState<string[]>([])
+  const [emailSubject,     setEmailSubject]     = useState('')
+  const [emailBody,        setEmailBody]        = useState('')
+  const [sendingEmail,     setSendingEmail]     = useState(false)
   const [signingOut,    setSigningOut]     = useState(false)
   const [notifStatus,   setNotifStatus]    = useState<'unsupported'|'default'|'granted'|'denied'>('default')
   const [enablingNotif, setEnablingNotif]  = useState(false)
@@ -247,6 +257,7 @@ export default function Home() {
         setUserRole(data.role || null)
         setMyProps(Array.isArray(data.assigned_property_ids) ? data.assigned_property_ids : [])
         setUserName(data.full_name || '')
+        setUserEmail(data.email || user.email || '')
       }
     }
     loadAccess()
@@ -273,6 +284,7 @@ export default function Home() {
       const {data:vendors}          = await supabase.from('system_vendors').select('*').order('created_at',{ascending:true})
       const {data:equipphotos}      = await supabase.from('system_equipment_photos').select('*').order('created_at',{ascending:true})
       const {data:healthrows}       = await supabase.from('health_confirmations').select('*').order('confirmed_at',{ascending:false})
+      const {data:allusers}         = await supabase.from('user_access').select('user_id, full_name, role, email, assigned_property_ids')
       const {data:ecosts}           = await supabase.from('event_costs').select('*')
       const {data:eclogs}           = await supabase.from('event_cost_log').select('*').order('created_at',{ascending:false})
       const {data:edocs}            = await supabase.from('event_documents').select('*').order('created_at',{ascending:false})
@@ -316,6 +328,7 @@ export default function Home() {
         const hcm:Record<string,any>={}
         ;(healthrows||[]).forEach((h:any)=>{ if(!hcm[h.property_id]) hcm[h.property_id]=h })
         setHealthConfirmations(hcm)
+        setEmailUsers((allusers||[]).filter((u:any)=>u.email))
         // Event costs keyed by status_update_id
         const cm:Record<number,any>={}
         ;(ecosts||[]).forEach((c:any)=>{ cm[c.status_update_id]=c })
@@ -395,6 +408,37 @@ export default function Home() {
 
   // On load, silently refresh the subscription if permission was already granted.
   useEffect(()=>{ registerPush(false) },[])
+
+  // ─── Admin master email ───────────────────────────────────────────────────────
+  // Resolve the selected recipients (deduped email list) from the composer state.
+  const emailRecipients = () => {
+    let list = emailUsers.filter((u:any)=>u.email)
+    if(emailMode==='individual'){
+      list = list.filter((u:any)=>emailSelectedIds.includes(u.user_id))
+    } else {
+      if(emailGroup==='admins')      list = list.filter((u:any)=>u.role==='admin')
+      else if(emailGroup==='rm_rsm') list = list.filter((u:any)=>u.role==='rm'||u.role==='rsm')
+      else if(emailGroup==='onsite') list = list.filter((u:any)=>u.role==='cm'||u.role==='sm'||u.role==='team_member')
+      // 'everyone' → no filter
+    }
+    return Array.from(new Set(list.map((u:any)=>u.email)))
+  }
+
+  const sendMasterEmail = async (recipients:string[]) => {
+    if(recipients.length===0){ showToast('No recipients selected'); return }
+    if(!emailSubject.trim() || !emailBody.trim()){ showToast('Add a subject and a message first'); return }
+    setSendingEmail(true)
+    try{
+      const res = await fetch('/api/send-email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipients, subject:emailSubject, body:emailBody})})
+      const data = await res.json()
+      if(data.ok){
+        showToast('Sent to '+data.sent+' recipient'+(data.sent===1?'':'s')+((data.failed&&data.failed.length)?' · '+data.failed.length+' failed':''))
+      } else {
+        showToast('Send failed: '+(data.error||'unknown error'))
+      }
+    }catch(e:any){ showToast('Send failed: '+(e?.message||'network error')) }
+    setSendingEmail(false)
+  }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────────
   const showToast = (msg:string) => { setToast(msg); setTimeout(()=>setToast(null),3000) }
@@ -2326,6 +2370,15 @@ export default function Home() {
               {enablingNotif?'Enabling...':'🔔 Enable Notifications'}
             </button>
           )}
+          {!isMobile && userRole==='admin' && (
+            <button
+              onClick={()=>setEmailPanelOpen(true)}
+              title='Send an email to team members'
+              style={{background:'rgba(255,255,255,0.1)',color:'#f8fafc',border:'1px solid rgba(255,255,255,0.2)',borderRadius:'7px',padding:'7px 14px',fontSize:'12px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap' as any}}
+            >
+              ✉️ Send Email
+            </button>
+          )}
           <button
             onClick={handleSignOut}
             disabled={signingOut}
@@ -2494,6 +2547,16 @@ export default function Home() {
                 </button>
               )}
             </div>
+            {userRole==='admin' && (
+              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'16px',marginTop:'12px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+                  <span style={{fontSize:'18px'}}>✉️</span>
+                  <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>Send Email</div>
+                </div>
+                <div style={{fontSize:'12px',color:'#64748b',lineHeight:1.5,marginBottom:'12px'}}>Send an email to team members from the dashboard.</div>
+                <button onClick={()=>setEmailPanelOpen(true)} style={{width:'100%',padding:'10px',background:'#0f172a',color:'#fff',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:'pointer'}}>Compose Email</button>
+              </div>
+            )}
           </div>
         )}
 
@@ -2713,6 +2776,65 @@ export default function Home() {
       )}
 
       {/* ── Photo viewer (full size) ── */}
+      {emailPanelOpen && userRole==='admin' && (()=>{
+        const recips = emailRecipients()
+        const roleLabel = (r:string)=> r==='rm'?'RM':r==='rsm'?'RSM':r==='cm'?'CM':r==='sm'?'SM':r==='team_member'?'Team Member':r==='admin'?'Admin':r
+        return (
+        <div onClick={()=>!sendingEmail&&setEmailPanelOpen(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:600,padding:'16px'}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:'12px',width:'100%',maxWidth:'460px',maxHeight:'90vh',overflowY:'auto',padding:'18px'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'14px'}}>
+              <div style={{fontWeight:'700',fontSize:'16px',color:'#1e293b'}}>✉️ Send Email</div>
+              <button onClick={()=>!sendingEmail&&setEmailPanelOpen(false)} style={{background:'none',border:'none',cursor:'pointer',fontSize:'20px',color:'#94a3b8',lineHeight:1}}>×</button>
+            </div>
+
+            <div style={{fontSize:'11px',fontWeight:'700',color:'#475569',marginBottom:'6px'}}>Recipients</div>
+            <div style={{display:'flex',gap:'6px',marginBottom:'10px'}}>
+              {[['group','By group'],['individual','Specific people']].map(([v,l])=>(
+                <button key={v} onClick={()=>setEmailMode(v as any)} style={{flex:1,padding:'7px',borderRadius:'7px',border:'1px solid '+(emailMode===v?'#3b82f6':'#e2e8f0'),background:emailMode===v?'#eff6ff':'#fff',color:emailMode===v?'#1d4ed8':'#64748b',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>{l}</button>
+              ))}
+            </div>
+
+            {emailMode==='group' ? (
+              <select value={emailGroup} onChange={e=>setEmailGroup(e.target.value as any)} style={{width:'100%',padding:'8px',borderRadius:'7px',border:'1px solid #e2e8f0',fontSize:'13px',marginBottom:'10px',background:'#fff'}}>
+                <option value='everyone'>Everyone ({emailUsers.length})</option>
+                <option value='admins'>Admins ({emailUsers.filter((u:any)=>u.role==='admin').length})</option>
+                <option value='rm_rsm'>RMs &amp; RSMs ({emailUsers.filter((u:any)=>u.role==='rm'||u.role==='rsm').length})</option>
+                <option value='onsite'>On-site staff — CM/SM/Team ({emailUsers.filter((u:any)=>u.role==='cm'||u.role==='sm'||u.role==='team_member').length})</option>
+              </select>
+            ) : (
+              <div style={{border:'1px solid #e2e8f0',borderRadius:'7px',maxHeight:'160px',overflowY:'auto',marginBottom:'10px'}}>
+                {emailUsers.length===0 && <div style={{padding:'10px',fontSize:'12px',color:'#94a3b8'}}>No users with email addresses found.</div>}
+                {emailUsers.map((u:any)=>{
+                  const on = emailSelectedIds.includes(u.user_id)
+                  return (
+                    <label key={u.user_id} style={{display:'flex',alignItems:'center',gap:'8px',padding:'7px 10px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}}>
+                      <input type='checkbox' checked={on} onChange={()=>setEmailSelectedIds((prev:string[])=> on ? prev.filter(id=>id!==u.user_id) : [...prev,u.user_id])}/>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:'12px',fontWeight:'600',color:'#1e293b'}}>{u.full_name}</div>
+                        <div style={{fontSize:'10px',color:'#94a3b8'}}>{roleLabel(u.role)} · {u.email}</div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
+
+            <div style={{fontSize:'11px',color:recips.length?'#16a34a':'#94a3b8',fontWeight:'600',marginBottom:'12px'}}>
+              {recips.length} recipient{recips.length===1?'':'s'} selected
+            </div>
+
+            <input value={emailSubject} onChange={e=>setEmailSubject(e.target.value)} placeholder='Subject' style={{width:'100%',padding:'8px 10px',borderRadius:'7px',border:'1px solid #e2e8f0',fontSize:'13px',boxSizing:'border-box' as any,marginBottom:'8px'}}/>
+            <textarea value={emailBody} onChange={e=>setEmailBody(e.target.value)} placeholder='Write your message...' style={{width:'100%',padding:'8px 10px',borderRadius:'7px',border:'1px solid #e2e8f0',fontSize:'13px',minHeight:'120px',resize:'vertical' as any,boxSizing:'border-box' as any,marginBottom:'12px'}}/>
+
+            <div style={{display:'flex',gap:'8px'}}>
+              <button onClick={()=>{ if(!userEmail){showToast('No email on file for your account');return} if(!emailSubject.trim()||!emailBody.trim()){showToast('Add a subject and message first');return} sendMasterEmail([userEmail]) }} disabled={sendingEmail} title='Send this message only to your own email to test the connection' style={{flex:1,padding:'10px',background:'#f1f5f9',color:'#334155',border:'none',borderRadius:'8px',fontSize:'12px',fontWeight:'700',cursor:sendingEmail?'default':'pointer'}}>Test to myself</button>
+              <button onClick={()=>{ if(recips.length===0){showToast('No recipients selected');return} if(!emailSubject.trim()||!emailBody.trim()){showToast('Add a subject and message first');return} if(window.confirm('Send this email to '+recips.length+' recipient'+(recips.length===1?'':'s')+'?')) sendMasterEmail(recips) }} disabled={sendingEmail} style={{flex:2,padding:'10px',background:'#0f172a',color:'#fff',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'700',cursor:sendingEmail?'default':'pointer'}}>{sendingEmail?'Sending...':'Send Email'}</button>
+            </div>
+          </div>
+        </div>
+        )
+      })()}
+
       {photoViewer && (
         <div onClick={()=>setPhotoViewer(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:500,padding:'20px'}}>
           <img src={photoViewer} alt='' style={{maxWidth:'100%',maxHeight:'100%',borderRadius:'8px',objectFit:'contain' as any}}/>
@@ -2728,4 +2850,3 @@ export default function Home() {
     </div>
   )
 }
-
