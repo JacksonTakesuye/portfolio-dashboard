@@ -3,6 +3,11 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* This dashboard is a light-themed app (white cards, white inputs).
+     Pin the color scheme to light so phones/browsers in dark mode don't
+     invert form-field text to near-white, which made typing unreadable
+     in sunlight. */
+  color-scheme: light;
 }
 
 @theme inline {
@@ -12,15 +17,41 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Force all typed text to solid black, regardless of device dark mode.
+   Covers every input, textarea, and dropdown in the app — current and future. */
+input,
+textarea,
+select {
+  color: #000000 !important;
+  background-color: #ffffff;
+  -webkit-text-fill-color: #000000; /* Safari/iOS ignores `color` in some states */
+  opacity: 1;
+}
+
+/* Keep placeholder hints readable but clearly secondary to typed text. */
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8 !important;
+  -webkit-text-fill-color: #94a3b8;
+  opacity: 1;
+}
+
+/* Disabled fields: still legible, visibly inactive. */
+input:disabled,
+textarea:disabled,
+select:disabled {
+  color: #475569 !important;
+  -webkit-text-fill-color: #475569;
+}
+
+/* iOS Safari can tint autofilled fields; keep that text black too. */
+input:-webkit-autofill,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #000000;
 }
