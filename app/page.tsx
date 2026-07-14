@@ -202,6 +202,9 @@ export default function Home() {
   const [mobileTab,     setMobileTab]      = useState<'portfolio'|'alerts'|'settings'>('portfolio')
   // ─── Systems Out portfolio-wide view ───
   const [systemsOutOpen, setSystemsOutOpen] = useState(false)
+  const [alertsOpen,     setAlertsOpen]     = useState(false)
+  // Alerts time window. Default 7 days so Friday-evening events are still visible Monday.
+  const [alertWindow,    setAlertWindow]    = useState<'48h'|'7d'|'all'>('7d')
   const [systemsOutSort, setSystemsOutSort] = useState<'recent'|'state'|'rm'|'property'>('recent')
   const [systemsOutFilterType,  setSystemsOutFilterType]  = useState<'state'|'rm'|'rsm'>('state')
   const [systemsOutFilterValue, setSystemsOutFilterValue] = useState('all')
@@ -1142,6 +1145,19 @@ export default function Home() {
   const visibleAlerts = effRole==='admin'
     ? alertLog
     : alertLog.filter((a:any)=> a.property_id ? effProps.includes(a.property_id) : false)
+
+  // Apply the selected time window. 'all' falls back to the full visible list.
+  const windowedAlerts = (()=>{
+    if(alertWindow==='all') return visibleAlerts
+    const hours = alertWindow==='48h' ? 48 : 24*7
+    const cutoff = Date.now() - hours*3600000
+    return visibleAlerts.filter((a:any)=> a.created_at && new Date(a.created_at).getTime() >= cutoff)
+  })()
+
+  // Count of alerts in the last 24h — drives the header badge so people can see at a
+  // glance whether anything new came in while they were away from their computer.
+  const recentAlertCount = visibleAlerts.filter((a:any)=>
+    a.created_at && new Date(a.created_at).getTime() >= Date.now()-24*3600000).length
 
   const TABS        = [['all','All'],['elevators','Elevators'],['compactors','Compactors'],['pools','Pools'],['gates','Gates']]
   const DETAIL_TABS = [['systems','Systems'],['psr','PSR Report'],['sysinfo','System Info'],['documents','Documents'],['visits','Site Visits']]
@@ -2202,11 +2218,18 @@ export default function Home() {
   // ─── Alerts screen (mobile only) ─────────────────────────────────────────────
   const renderAlerts = () => (
     <div style={{flex:1,overflowY:'auto',padding:'12px',paddingBottom:'80px'}}>
-      <div style={{fontWeight:'700',fontSize:'15px',color:'#1e293b',marginBottom:'4px'}}>Alerts</div>
-      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>{effRole==='admin'?'Last 50 events across all properties':'Recent events for your properties'}</div>
-      {visibleAlerts.length===0
-        ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'13px',padding:'40px 0'}}>No alerts yet.</div>
-        : visibleAlerts.map((a:any, i:number)=>{
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'10px',marginBottom:'4px'}}>
+        <div style={{fontWeight:'700',fontSize:'15px',color:'#1e293b'}}>Alerts</div>
+        <select value={alertWindow} onChange={e=>setAlertWindow(e.target.value as any)} style={{padding:'5px 8px',borderRadius:'6px',border:'1px solid #e2e8f0',fontSize:'11px',fontWeight:'600',color:'#334155',background:'#fff',cursor:'pointer'}}>
+          <option value='48h'>Last 48 hours</option>
+          <option value='7d'>Last 7 days</option>
+          <option value='all'>All recent</option>
+        </select>
+      </div>
+      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>{effRole==='admin'?'Events across all properties':'Recent events for your properties'}</div>
+      {windowedAlerts.length===0
+        ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'13px',padding:'40px 0'}}>{visibleAlerts.length===0?'No alerts yet.':'No alerts in this time range.'}</div>
+        : windowedAlerts.map((a:any, i:number)=>{
             const isOut   = a.type==='out-of-service'
             const isMaint = a.type==='maintenance'
             const isPsr   = a.type==='psr-submitted'
@@ -2221,10 +2244,14 @@ export default function Home() {
             const dateStr = a.created_at
               ? new Date(a.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
               : ''
+            const isNew = a.created_at && (Date.now()-new Date(a.created_at).getTime()) < 24*3600000
             return (
-              <div key={i} style={{background:'#fff',borderRadius:'10px',padding:'12px 14px',marginBottom:'8px',border:'1px solid #e2e8f0'}}>
+              <div key={i} style={{background:'#fff',borderRadius:'10px',padding:'12px 14px',marginBottom:'8px',border:'1px solid '+(isNew?'#bfdbfe':'#e2e8f0')}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'5px'}}>
-                  <span style={{background:bg,color:color,fontSize:'10px',fontWeight:'600',padding:'2px 8px',borderRadius:'10px'}}>{label}</span>
+                  <div style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap' as any}}>
+                    <span style={{background:bg,color:color,fontSize:'10px',fontWeight:'600',padding:'2px 8px',borderRadius:'10px'}}>{label}</span>
+                    {isNew && <span style={{background:'#dbeafe',color:'#1d4ed8',fontSize:'9px',fontWeight:'700',padding:'2px 6px',borderRadius:'8px'}}>NEW</span>}
+                  </div>
                   <span style={{fontSize:'10px',color:'#94a3b8'}}>{dateStr}</span>
                 </div>
                 <div style={{fontWeight:'600',fontSize:'13px',color:'#1e293b',marginBottom:'2px'}}>{a.property_name||'—'}</div>
@@ -2235,6 +2262,24 @@ export default function Home() {
             )
           })
       }
+    </div>
+  )
+
+  // Desktop full-screen Alerts panel (mobile uses the Alerts tab instead)
+  const renderAlertsPanel = () => (
+    <div style={{position:'fixed',inset:0,background:'#f1f5f9',zIndex:150,display:'flex',flexDirection:'column'}}>
+      <div style={{background:'#0f172a',padding:isMobile?'12px 16px':'14px 24px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+          <button onClick={()=>setAlertsOpen(false)} style={{display:'flex',alignItems:'center',gap:'4px',background:'rgba(255,255,255,0.1)',border:'none',borderRadius:'20px',padding:'6px 14px',color:'#cbd5e1',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>← Back</button>
+          <div>
+            <div style={{color:'#f8fafc',fontSize:isMobile?'14px':'15px',fontWeight:'700'}}>Alerts</div>
+            <div style={{color:'#64748b',fontSize:'11px'}}>{effRole==='admin'?'All properties':'Your assigned properties'}</div>
+          </div>
+        </div>
+      </div>
+      <div style={{flex:1,overflowY:'auto',maxWidth:'900px',width:'100%',margin:'0 auto'}}>
+        {renderAlerts()}
+      </div>
     </div>
   )
 
@@ -2449,6 +2494,18 @@ export default function Home() {
               style={{background:'#3b82f6',color:'#fff',border:'none',borderRadius:'7px',padding:'7px 14px',fontSize:'12px',fontWeight:'600',cursor:enablingNotif?'default':'pointer',whiteSpace:'nowrap' as any}}
             >
               {enablingNotif?'Enabling...':'🔔 Enable Notifications'}
+            </button>
+          )}
+          {!isMobile && (
+            <button
+              onClick={()=>setAlertsOpen(true)}
+              title='See recent alerts for your properties'
+              style={{position:'relative' as any,background:'rgba(255,255,255,0.1)',color:'#f8fafc',border:'1px solid rgba(255,255,255,0.2)',borderRadius:'7px',padding:'7px 14px',fontSize:'12px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap' as any}}
+            >
+              🔔 Alerts
+              {recentAlertCount>0 && (
+                <span style={{marginLeft:'6px',background:'#dc2626',color:'#fff',fontSize:'10px',fontWeight:'700',padding:'1px 6px',borderRadius:'10px'}}>{recentAlertCount}</span>
+              )}
             </button>
           )}
           {!isMobile && isRealAdmin && (
@@ -2896,6 +2953,7 @@ export default function Home() {
 
       {/* ── Systems Out full view ── */}
       {systemsOutOpen && renderSystemsOut()}
+      {alertsOpen && !isMobile && renderAlertsPanel()}
 
       {/* ── File viewer modal (in-screen) ── */}
       {fileViewer && (
