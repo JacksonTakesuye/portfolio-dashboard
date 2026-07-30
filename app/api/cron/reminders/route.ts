@@ -107,7 +107,7 @@ export async function GET(request: Request) {
   const weekMonday = azWeekMonday(az)
 
   const [{ data: props }, { data: subs }, { data: profs }] = await Promise.all([
-    supabase.from('properties').select('id, name, rm, rsm'),
+    supabase.from('properties').select('id, name, rm, rsm, alerts_start_date'),
     supabase.from('push_subscriptions').select('subscription, role, assigned_property_ids'),
     supabase.from('user_profiles').select('full_name, email, role, alerts_start_date'),
   ])
@@ -127,6 +127,12 @@ export async function GET(request: Request) {
     if (u.alerts_start_date && u.alerts_start_date > todayAz) return null
     return u.email
   }
+  // Is a property live for automated alert emails yet?
+  // A property with an alerts_start_date still in the future has not been rolled
+  // out to its staff, so no automated email should go out about it. Blank = live.
+  const propertyAlertsLive = (prop: any) =>
+    !prop?.alerts_start_date || prop.alerts_start_date <= todayAz
+
   const nameOf = (id: string) => properties.find((p) => p.id === id)?.name || id
 
   const summary = { psrReminders: 0, psrSent: 0, visitReminders: 0, visitSent: 0, health3: 0, health3Sent: 0, health5: 0, health5Sent: 0, health5Emails: 0, csr3: 0, csr7: 0, csr10: 0 }
@@ -220,6 +226,7 @@ export async function GET(request: Request) {
   }
 
   for (const p of properties) {
+    if (!propertyAlertsLive(p)) continue // property not rolled out yet — stay silent
     const last = latestConf[p.id]
     const daysSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 9999
     const dayLabel = daysSince === 9999 ? '3+' : String(daysSince)
@@ -290,6 +297,7 @@ export async function GET(request: Request) {
 
     const prop = properties.find((p) => p.id === sys.property_id)
     if (!prop) continue
+    if (!propertyAlertsLive(prop)) continue // property not rolled out yet — stay silent
     const reason = runStart.reason || latest.reason || 'not specified'
     const affected = runStart.affected_units || latest.affected_units || ''
     const label = affected || sys.name // name specific elevators when applicable
