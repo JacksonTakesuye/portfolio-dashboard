@@ -109,12 +109,24 @@ export async function GET(request: Request) {
   const [{ data: props }, { data: subs }, { data: profs }] = await Promise.all([
     supabase.from('properties').select('id, name, rm, rsm'),
     supabase.from('push_subscriptions').select('subscription, role, assigned_property_ids'),
-    supabase.from('user_profiles').select('full_name, email, role'),
+    supabase.from('user_profiles').select('full_name, email, role, alerts_start_date'),
   ])
   const properties: any[] = props || []
   const subscriptions: Sub[] = (subs || []) as Sub[]
   const profiles: any[] = profs || []
-  const emailOf = (fullName: string) => profiles.find((u) => u.full_name === fullName)?.email || null
+  // Today's date in Arizona as YYYY-MM-DD, for comparing against alerts_start_date.
+  const todayAz = ymd(az)
+
+  // Look up a person's email by full name, for alert routing.
+  // If their alerts_start_date is still in the future they are inside their
+  // onboarding window, so return null and no automated email reaches them yet.
+  // Returning null is safe: sendEmail() drops empty recipient lists and no-ops.
+  const emailOf = (fullName: string) => {
+    const u = profiles.find((p) => p.full_name === fullName)
+    if (!u || !u.email) return null
+    if (u.alerts_start_date && u.alerts_start_date > todayAz) return null
+    return u.email
+  }
   const nameOf = (id: string) => properties.find((p) => p.id === id)?.name || id
 
   const summary = { psrReminders: 0, psrSent: 0, visitReminders: 0, visitSent: 0, health3: 0, health3Sent: 0, health5: 0, health5Sent: 0, health5Emails: 0, csr3: 0, csr7: 0, csr10: 0 }
