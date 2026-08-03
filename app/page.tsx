@@ -113,6 +113,7 @@ const fmtDateTime = (ts:string) => ts
 const ROLE_LABELS: Record<string,string> = {
   admin:'Administrator', rm:'Regional Manager', rsm:'Regional Service Manager',
   cm:'Community Manager', sm:'Service Manager', team_member:'Team Member',
+  pem_user:'PEM User',
 }
 
 export default function Home() {
@@ -467,17 +468,21 @@ export default function Home() {
   const effRole  = (isRealAdmin && viewAsRole) ? viewAsRole : userRole
   const effProps = (isRealAdmin && viewAsRole) ? ['tx1'] : myProps
 
-  // canEdit: admin edits anything; everyone else edits only assigned properties.
+  // PEM User: a corporate read-only role. Sees the whole portfolio and the full
+  // alerts feed, but cannot edit anything anywhere. Holds no property assignments.
+  const isReadOnly = effRole==='pem_user'
+  // canEdit: admin edits anything; PEM User edits nothing; everyone else edits only assigned properties.
   const canEdit = (propId:string|undefined|null) => {
     if(!propId) return false
+    if(isReadOnly) return false
     if(effRole==='admin') return true
     return effProps.includes(propId)
   }
   const isTeamMember = effRole==='team_member'
   // On-site roles (CM, SM, Team Member) only ever see their assigned properties.
   const restrictedToAssigned = effRole==='team_member' || effRole==='cm' || effRole==='sm'
-  // Admins, RMs, and RSMs can see the whole portfolio (e.g. all systems out).
-  const seesAllProperties = effRole==='admin' || effRole==='rm' || effRole==='rsm'
+  // Admins, RMs, RSMs, and PEM Users can see the whole portfolio (e.g. all systems out).
+  const seesAllProperties = effRole==='admin' || effRole==='rm' || effRole==='rsm' || effRole==='pem_user'
   // Only RM, RSM, and admin may log site visits
   const canEditVisits = effRole==='rm' || effRole==='rsm' || effRole==='admin'
   // RMs, RSMs, and admins can enter/adjust scores. (Admin scores are still
@@ -1143,8 +1148,8 @@ export default function Home() {
     .sort((a:any,b:any)=>psrSort==='newest'
       ? new Date(b.report_date).getTime()-new Date(a.report_date).getTime()
       : new Date(a.report_date).getTime()-new Date(b.report_date).getTime())
-  // Alerts the current user is allowed to see (admin: all; others: only assigned properties)
-  const visibleAlerts = effRole==='admin'
+  // Alerts the current user is allowed to see (admin + PEM User: all; others: only assigned properties)
+  const visibleAlerts = (effRole==='admin' || effRole==='pem_user')
     ? alertLog
     : alertLog.filter((a:any)=> a.property_id ? effProps.includes(a.property_id) : false)
 
@@ -1319,7 +1324,9 @@ export default function Home() {
       {/* View-only banner when the user can't edit this property */}
       {detailProp && !editable && (
         <div style={{marginBottom:'12px',padding:'8px 10px',background:'#fef9c3',border:'1px solid #fde68a',borderRadius:'7px',fontSize:'11px',color:'#92400e',fontWeight:'600'}}>
-          View only — you are not assigned to this property, so editing is disabled.
+          {isReadOnly
+            ? 'View only — the PEM User role has read-only access across the portfolio.'
+            : 'View only — you are not assigned to this property, so editing is disabled.'}
         </div>
       )}
       {/* System Health confirmation ("Systems Healthy") */}
@@ -2228,7 +2235,7 @@ export default function Home() {
           <option value='all'>All recent</option>
         </select>
       </div>
-      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>{effRole==='admin'?'Events across all properties':'Recent events for your properties'}</div>
+      <div style={{fontSize:'11px',color:'#94a3b8',marginBottom:'14px'}}>{(effRole==='admin'||effRole==='pem_user')?'Events across all properties':'Recent events for your properties'}</div>
       {windowedAlerts.length===0
         ? <div style={{textAlign:'center',color:'#94a3b8',fontSize:'13px',padding:'40px 0'}}>{visibleAlerts.length===0?'No alerts yet.':'No alerts in this time range.'}</div>
         : windowedAlerts.map((a:any, i:number)=>{
@@ -2278,7 +2285,7 @@ export default function Home() {
           <button onClick={()=>setAlertsOpen(false)} style={{display:'flex',alignItems:'center',gap:'4px',background:'rgba(255,255,255,0.1)',border:'none',borderRadius:'20px',padding:'6px 14px',color:'#cbd5e1',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>← Back</button>
           <div>
             <div style={{color:'#f8fafc',fontSize:isMobile?'14px':'15px',fontWeight:'700'}}>Alerts</div>
-            <div style={{color:'#64748b',fontSize:'11px'}}>{effRole==='admin'?'All properties':'Your assigned properties'}</div>
+            <div style={{color:'#64748b',fontSize:'11px'}}>{(effRole==='admin'||effRole==='pem_user')?'All properties':'Your assigned properties'}</div>
           </div>
         </div>
       </div>
@@ -2523,6 +2530,7 @@ export default function Home() {
               <option value='cm'>View as: CM</option>
               <option value='sm'>View as: SM</option>
               <option value='team_member'>View as: Team Member</option>
+              <option value='pem_user'>View as: PEM User</option>
             </select>
           )}
           {!isMobile && effRole==='admin' && (
@@ -2716,6 +2724,7 @@ export default function Home() {
                   <option value='cm'>Community Manager</option>
                   <option value='sm'>Service Manager</option>
                   <option value='team_member'>Team Member</option>
+                  <option value='pem_user'>PEM User</option>
                 </select>
               </div>
             )}
