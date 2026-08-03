@@ -5,9 +5,14 @@ import { createClient } from '@supabase/supabase-js'
 // This route is invoked on a schedule by Vercel Cron (a daily GET request).
 // It sends four kinds of reminders:
 //   1. PSR reminders — the day after a property's PSR is due, to that property's Service Manager, if still unsubmitted.
-//   2. Site-visit reminders — day 24 heads-up to RM/RSM, day 31 escalation to Alicia Bush and Colson Franse.
+//   2. Site-visit reminders — day 24 heads-up to RM/RSM, day 31 escalation to Alicia Bush and Colson Franse (RM/RSM copied).
 //   3. Systems Healthy reminders — day 3 to on-site CM/SM, day 5 escalation to RM/RSM.
 //   4. Critical service issue escalation — day 3 RM/RSM, day 5 Alicia Bush and Colson Franse, day 7 Paul Mashni.
+//
+// Every day-count above is capped at the number of days the property has been
+// live (see daysLive). A property only starts accruing days on its
+// alerts_start_date, so newly rolled-out properties begin at day 0 rather than
+// firing a backlog of escalations on their first live day.
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -60,7 +65,7 @@ async function send(subs: Sub[], title: string, body: string) {
 // Send email via Resend. No-op (returns 0) until RESEND_API_KEY is configured in Vercel.
 async function sendEmail(to: (string | null)[], subject: string, html: string) {
   const key = process.env.RESEND_API_KEY
-  const recipients = to.filter(Boolean) as string[]
+  const recipients = Array.from(new Set(to.filter(Boolean) as string[]))
   if (!key || recipients.length === 0) return 0
   const from = process.env.ALERT_EMAIL_FROM || 'PEM Dashboard <dashboard@alerts.proequitymgmt.com>'
   try {
@@ -153,6 +158,18 @@ export async function GET(request: Request) {
   const propertyAlertsLive = (prop: any) =>
     !prop?.alerts_start_date || prop.alerts_start_date <= todayAz
 
+  // How many days a property has been live for automated alerts.
+  // Days that elapsed BEFORE a property's alerts_start_date predate its rollout —
+  // nobody was being reminded then, so those days must not count toward any
+  // reminder clock. Every elapsed-day figure below is capped at this number.
+  // A property with no alerts_start_date has always been live, so it is uncapped.
+  const daysLive = (prop: any) => {
+    if (!prop?.alerts_start_date) return Infinity
+    const startMs = new Date(prop.alerts_start_date + 'T00:00:00Z').getTime()
+    const todayMs = new Date(todayAz + 'T00:00:00Z').getTime()
+    return Math.max(0, Math.floor((todayMs - startMs) / 86400000))
+  }
+
   const nameOf = (id: string) => properties.find((p) => p.id === id)?.name || id
 
   const summary = { psrReminders: 0, psrSent: 0, visit24: 0, visit24Sent: 0, visit24Emails: 0, visit31: 0, visit31Sent: 0, visit31Emails: 0, health3: 0, health3Sent: 0, health5: 0, health5Sent: 0, health5Emails: 0, csr3: 0, csr5: 0, csr7: 0 }
@@ -163,6 +180,11 @@ export async function GET(request: Request) {
   if (dow === 2) dueGroup = 'monday'
   else if (dow === 3) dueGroup = 'tuesday'
 
+  // The calendar date the report being chased was actually due.
+  const dueDate = dueGroup === 'monday'
+    ? weekMonday
+    : ymd(new Date(new Date(weekMonday + 'T00:00:00Z').getTime() + 86400000))
+
   if (dueGroup) {
     const { data: schedule } = await supabase
       .from('psr_schedule')
@@ -171,6 +193,14 @@ export async function GET(request: Request) {
 
     for (const row of schedule || []) {
       const pid = row.property_id
+
+      // Rollout grace period. A PSR that came due before a property's
+      // alerts_start_date predates its rollout, so no one should be chased for it.
+      // The first reminder a property ever receives is for the first due date
+      // falling on or after the day it went live.
+      const prop = properties.find((p) => p.id === pid)
+      if (!prop) continue
+      if (prop.alerts_start_date && prop.alerts_start_date > dueDate) continue
 
       // Did a PSR report already come in for this property this week?
       const { data: reports } = await supabase
@@ -218,7 +248,9 @@ export async function GET(request: Request) {
   for (const p of properties) {
     if (!propertyAlertsLive(p)) continue // property not rolled out yet — stay silent
     const last = latestVisit[p.id]
-    const daysSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 9999
+    const rawDays = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 9999
+    // Days before this property went live do not count — see daysLive().
+    const daysSince = Math.min(rawDays, daysLive(p))
     const dayLabel = daysSince === 9999 ? 'over 30' : String(daysSince)
 
     if (daysSince >= 31) {
@@ -227,15 +259,21 @@ export async function GET(request: Request) {
       summary.visit31++
       const title = 'Site Visit Overdue - ' + p.name
       const body = p.name + ' has had no logged site visit in ' + dayLabel + ' days.'
-      const targets = subsForUserIds(subscriptions, [userIdOf('Alicia Bush'), userIdOf('Colson Franse')])
+      // Alicia and Colson, plus the property's own RM and RSM. De-duplicated in
+      // case someone would otherwise be reached twice.
+      const targets = Array.from(new Set([
+        ...subsForUserIds(subscriptions, [userIdOf('Alicia Bush'), userIdOf('Colson Franse')]),
+        ...recipientsFor(subscriptions, p.id, ['rm', 'rsm']),
+      ]))
       if (targets.length) summary.visit31Sent += await send(targets, title, body)
       const html =
         '<p><strong>' + p.name + '</strong> has had no logged site visit in ' + dayLabel + ' days.</p>' +
-        '<p>The assigned Regional Manager (' + (p.rm || 'unassigned') + ') and Regional Service Manager (' +
-        (p.rsm || 'unassigned') + ') were reminded on day 24. This visit is now past due.</p>' +
+        '<p>Regional Manager: ' + (p.rm || 'unassigned') + ' &middot; Regional Service Manager: ' +
+        (p.rsm || 'unassigned') + '</p>' +
+        '<p>A reminder was sent on day 24. This visit is now past due and has been escalated to Alicia Bush and Colson Franse.</p>' +
         '<p style="color:#64748b">&mdash; PEM Portfolio Systems Dashboard</p>'
       summary.visit31Emails += await sendEmail(
-        [emailOf('Alicia Bush'), emailOf('Colson Franse')],
+        [emailOf('Alicia Bush'), emailOf('Colson Franse'), emailOf(p.rm), emailOf(p.rsm)],
         'Site Visit Overdue - ' + p.name, html)
       await logAlert('visit-31day', p.id, p.name, 'No site visit logged in ' + dayLabel + ' days — escalated to Alicia Bush & Colson Franse')
       await logReminder(p.id, 'visit-31day')
@@ -274,7 +312,9 @@ export async function GET(request: Request) {
   for (const p of properties) {
     if (!propertyAlertsLive(p)) continue // property not rolled out yet — stay silent
     const last = latestConf[p.id]
-    const daysSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 9999
+    const rawConfDays = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 9999
+    // Days before this property went live do not count — see daysLive().
+    const daysSince = Math.min(rawConfDays, daysLive(p))
     const dayLabel = daysSince === 9999 ? '3+' : String(daysSince)
 
     // 3-day nudge to the on-site CM/SM (at most once per day)
@@ -338,12 +378,18 @@ export async function GET(request: Request) {
     while (i - 1 >= 0 && hist[i - 1].status === 'out-of-service') i--
     const runStart = hist[i]
     const runStartMs = new Date(runStart.created_at).getTime()
-    const daysOpen = Math.floor((Date.now() - runStartMs) / 86400000)
-    if (daysOpen < 3) continue
 
     const prop = properties.find((p) => p.id === sys.property_id)
     if (!prop) continue
     if (!propertyAlertsLive(prop)) continue // property not rolled out yet — stay silent
+
+    // Days before this property went live do not count — see daysLive().
+    const daysOpen = Math.min(
+      Math.floor((Date.now() - runStartMs) / 86400000),
+      daysLive(prop)
+    )
+    if (daysOpen < 3) continue
+
     const reason = runStart.reason || latest.reason || 'not specified'
     const affected = runStart.affected_units || latest.affected_units || ''
     const label = affected || sys.name // name specific elevators when applicable
