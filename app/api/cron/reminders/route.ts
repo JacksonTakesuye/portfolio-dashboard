@@ -3,9 +3,11 @@ import webpush from 'web-push'
 import { createClient } from '@supabase/supabase-js'
 
 // This route is invoked on a schedule by Vercel Cron (a daily GET request).
-// It sends two kinds of reminders:
+// It sends four kinds of reminders:
 //   1. PSR reminders — the day after a property's PSR is due, to that property's Service Manager, if still unsubmitted.
-//   2. Site-visit reminders — to a property's RM and RSM when it has gone 30+ days without a visit.
+//   2. Site-visit reminders — day 24 heads-up to RM/RSM, day 31 escalation to Alicia Bush and Colson Franse.
+//   3. Systems Healthy reminders — day 3 to on-site CM/SM, day 5 escalation to RM/RSM.
+//   4. Critical service issue escalation — day 3 RM/RSM, day 5 Alicia Bush and Colson Franse, day 7 Paul Mashni.
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -28,7 +30,7 @@ function azWeekMonday(az: Date) {
   return ymd(monday)
 }
 
-type Sub = { subscription: any; role: string | null; assigned_property_ids: any }
+type Sub = { subscription: any; role: string | null; assigned_property_ids: any; user_id: string | null }
 
 function recipientsFor(subs: Sub[], propertyId: string, roles: string[]) {
   return subs.filter((s) => {
@@ -36,6 +38,15 @@ function recipientsFor(subs: Sub[], propertyId: string, roles: string[]) {
     const assigned = Array.isArray(s.assigned_property_ids) ? s.assigned_property_ids : []
     return assigned.includes(propertyId)
   })
+}
+
+// Find push subscriptions belonging to specific people, by their auth user id.
+// Used for escalations that go to named individuals (e.g. Alicia, Colson) rather
+// than to whoever happens to be assigned to the property.
+function subsForUserIds(subs: Sub[], userIds: (string | null)[]) {
+  const ids = userIds.filter(Boolean) as string[]
+  if (ids.length === 0) return []
+  return subs.filter((s) => s.user_id && ids.includes(s.user_id))
 }
 
 async function send(subs: Sub[], title: string, body: string) {
@@ -108,8 +119,8 @@ export async function GET(request: Request) {
 
   const [{ data: props }, { data: subs }, { data: profs }] = await Promise.all([
     supabase.from('properties').select('id, name, rm, rsm, alerts_start_date'),
-    supabase.from('push_subscriptions').select('subscription, role, assigned_property_ids'),
-    supabase.from('user_profiles').select('full_name, email, role, alerts_start_date'),
+    supabase.from('push_subscriptions').select('subscription, role, assigned_property_ids, user_id'),
+    supabase.from('user_profiles').select('id, full_name, email, role, alerts_start_date'),
   ])
   const properties: any[] = props || []
   const subscriptions: Sub[] = (subs || []) as Sub[]
@@ -127,6 +138,15 @@ export async function GET(request: Request) {
     if (u.alerts_start_date && u.alerts_start_date > todayAz) return null
     return u.email
   }
+  // Look up a person's auth user id by full name, for targeted push notifications.
+  // Respects the same onboarding window as emailOf — nobody is pushed to before
+  // their alerts_start_date.
+  const userIdOf = (fullName: string) => {
+    const u = profiles.find((p) => p.full_name === fullName)
+    if (!u || !u.id) return null
+    if (u.alerts_start_date && u.alerts_start_date > todayAz) return null
+    return u.id as string
+  }
   // Is a property live for automated alert emails yet?
   // A property with an alerts_start_date still in the future has not been rolled
   // out to its staff, so no automated email should go out about it. Blank = live.
@@ -135,7 +155,7 @@ export async function GET(request: Request) {
 
   const nameOf = (id: string) => properties.find((p) => p.id === id)?.name || id
 
-  const summary = { psrReminders: 0, psrSent: 0, visitReminders: 0, visitSent: 0, health3: 0, health3Sent: 0, health5: 0, health5Sent: 0, health5Emails: 0, csr3: 0, csr7: 0, csr10: 0 }
+  const summary = { psrReminders: 0, psrSent: 0, visit24: 0, visit24Sent: 0, visit24Emails: 0, visit31: 0, visit31Sent: 0, visit31Emails: 0, health3: 0, health3Sent: 0, health5: 0, health5Sent: 0, health5Emails: 0, csr3: 0, csr5: 0, csr7: 0 }
 
   // ── 1. PSR reminders ──────────────────────────────────────────────────────
   // Tuesday (dow 2) → chase Monday-due reports. Wednesday (dow 3) → chase Tuesday-due.
@@ -177,7 +197,13 @@ export async function GET(request: Request) {
     }
   }
 
-  // ── 2. Site-visit reminders (every day, max once per property per 7 days) ──
+  // ── 2. Site-visit reminders ───────────────────────────────────────────────
+  // Day 24+ → heads-up to the property's RM and RSM that a visit is due within the
+  //           coming week (push + email).
+  // Day 31+ → overdue escalation to Alicia Bush and Colson Franse
+  //           (push + email + in-app alert).
+  // A property receives at most one of the two per run, and each repeats no more
+  // than once per 7 days.
   const { data: visits } = await supabase
     .from('site_visits')
     .select('property_id, visit_date')
@@ -190,25 +216,45 @@ export async function GET(request: Request) {
   }
 
   for (const p of properties) {
+    if (!propertyAlertsLive(p)) continue // property not rolled out yet — stay silent
     const last = latestVisit[p.id]
-    let daysSince: number
-    if (!last) daysSince = 9999
-    else daysSince = Math.floor((Date.now() - new Date(last).getTime()) / 86400000)
-    if (daysSince <= 30) continue
+    const daysSince = last ? Math.floor((Date.now() - new Date(last).getTime()) / 86400000) : 9999
+    const dayLabel = daysSince === 9999 ? 'over 30' : String(daysSince)
 
-    if (await alreadyReminded(p.id, 'site-visit', 7)) continue // nudged within the last week
-
-    const targets = recipientsFor(subscriptions, p.id, ['rm', 'rsm'])
-    summary.visitReminders++
-    if (targets.length) {
+    if (daysSince >= 31) {
+      // Overdue — escalate to Alicia Bush and Colson Franse
+      if (await alreadyReminded(p.id, 'visit-31day', 7)) continue
+      summary.visit31++
       const title = 'Site Visit Overdue - ' + p.name
-      const body =
-        p.name + ' has not had a logged site visit in ' +
-        (daysSince === 9999 ? 'over 30' : daysSince) +
-        ' days. Please schedule one.'
-      summary.visitSent += await send(targets, title, body)
+      const body = p.name + ' has had no logged site visit in ' + dayLabel + ' days.'
+      const targets = subsForUserIds(subscriptions, [userIdOf('Alicia Bush'), userIdOf('Colson Franse')])
+      if (targets.length) summary.visit31Sent += await send(targets, title, body)
+      const html =
+        '<p><strong>' + p.name + '</strong> has had no logged site visit in ' + dayLabel + ' days.</p>' +
+        '<p>The assigned Regional Manager (' + (p.rm || 'unassigned') + ') and Regional Service Manager (' +
+        (p.rsm || 'unassigned') + ') were reminded on day 24. This visit is now past due.</p>' +
+        '<p style="color:#64748b">&mdash; PEM Portfolio Systems Dashboard</p>'
+      summary.visit31Emails += await sendEmail(
+        [emailOf('Alicia Bush'), emailOf('Colson Franse')],
+        'Site Visit Overdue - ' + p.name, html)
+      await logAlert('visit-31day', p.id, p.name, 'No site visit logged in ' + dayLabel + ' days — escalated to Alicia Bush & Colson Franse')
+      await logReminder(p.id, 'visit-31day')
+    } else if (daysSince >= 24) {
+      // Due soon — heads-up to the property's RM and RSM
+      if (await alreadyReminded(p.id, 'visit-24day', 7)) continue
+      summary.visit24++
+      const title = 'Site Visit Due Soon - ' + p.name
+      const body = p.name + ' was last visited ' + dayLabel + ' days ago. A site visit is due within the coming week.'
+      const targets = recipientsFor(subscriptions, p.id, ['rm', 'rsm'])
+      if (targets.length) summary.visit24Sent += await send(targets, title, body)
+      const html =
+        '<p><strong>' + p.name + '</strong> was last visited ' + dayLabel + ' days ago.</p>' +
+        '<p>A site visit is due within the coming week. Please schedule one and upload the SiteAuditPro report when you log the visit in the dashboard.</p>' +
+        '<p style="color:#64748b">&mdash; PEM Portfolio Systems Dashboard</p>'
+      summary.visit24Emails += await sendEmail([emailOf(p.rm), emailOf(p.rsm)], 'Site Visit Due Soon - ' + p.name, html)
+      await logAlert('visit-24day', p.id, p.name, 'No site visit logged in ' + dayLabel + ' days — RM/RSM reminded')
+      await logReminder(p.id, 'visit-24day')
     }
-    await logReminder(p.id, 'site-visit')
   }
 
   // ── 3. Systems Healthy reminders ──────────────────────────────────────────
@@ -266,9 +312,9 @@ export async function GET(request: Request) {
   // Clock = days a system has been *continuously* out-of-service. Any change away
   // from out-of-service (to maintenance or in-service) resets the clock, so a new
   // outage starts fresh. Each tier emails once per outage run:
-  //   3+ days  → the property's RM and RSM
-  //   7+ days  → Alicia Bush and Colson Franse
-  //   10+ days → Paul Mashni (highest level)
+  //   3+ days → the property's RM and RSM
+  //   5+ days → Alicia Bush and Colson Franse
+  //   7+ days → Paul Mashni (highest level)
   const [{ data: sysRows }, { data: suRows }] = await Promise.all([
     supabase.from('systems').select('id, property_id, name'),
     supabase.from('status_updates').select('system_id, status, reason, affected_units, created_at').order('created_at', { ascending: true }),
@@ -308,20 +354,28 @@ export async function GET(request: Request) {
       '</strong> has been out of service for ' + daysOpen + ' day' + (daysOpen === 1 ? '' : 's') + '.</p>' +
       '<p>Reason: ' + reason + '</p>'
 
-    // 10+ days → Paul Mashni
-    if (daysOpen >= 10 && !(await alreadyReminded(prop.id, 'csr10' + tag, 100000))) {
-      const html = line + '<p><strong>Highest-level escalation.</strong> This service issue has remained open for 10 or more days and requires immediate attention.</p>' + footer
-      summary.csr10 += await sendEmail([emailOf('Paul Mashni')], 'URGENT: Service Issue Open ' + daysOpen + ' Days - ' + prop.name, html)
-      await logAlert('csr-10day', prop.id, prop.name, label + ' out of service ' + daysOpen + ' days — escalated to Paul Mashni')
-      await logReminder(prop.id, 'csr10' + tag)
+    // 7+ days → Paul Mashni (highest level)
+    // The legacy 'csr10' check suppresses a duplicate on any outage that already
+    // escalated under the previous 10-day rule.
+    if (daysOpen >= 7 &&
+        !(await alreadyReminded(prop.id, 'csrexec' + tag, 100000)) &&
+        !(await alreadyReminded(prop.id, 'csr10' + tag, 100000))) {
+      const html = line + '<p><strong>Highest-level escalation.</strong> This service issue has remained open for 7 or more days and requires immediate attention.</p>' + footer
+      summary.csr7 += await sendEmail([emailOf('Paul Mashni')], 'URGENT: Service Issue Open ' + daysOpen + ' Days - ' + prop.name, html)
+      await logAlert('csr-exec', prop.id, prop.name, label + ' out of service ' + daysOpen + ' days — escalated to Paul Mashni')
+      await logReminder(prop.id, 'csrexec' + tag)
     }
 
-    // 7+ days → Alicia Bush and Colson Franse
-    if (daysOpen >= 7 && !(await alreadyReminded(prop.id, 'csr7' + tag, 100000))) {
-      const html = line + '<p>This service issue has been open for 7 or more days and requires escalation. Please review and ensure resolution is underway.</p>' + footer
-      summary.csr7 += await sendEmail([emailOf('Alicia Bush'), emailOf('Colson Franse')], 'Escalation: Service Issue Open ' + daysOpen + ' Days - ' + prop.name, html)
-      await logAlert('csr-7day', prop.id, prop.name, label + ' out of service ' + daysOpen + ' days — escalated to Alicia Bush & Colson Franse')
-      await logReminder(prop.id, 'csr7' + tag)
+    // 5+ days → Alicia Bush and Colson Franse
+    // The legacy 'csr7' check suppresses a duplicate on any outage that already
+    // escalated under the previous 7-day rule.
+    if (daysOpen >= 5 &&
+        !(await alreadyReminded(prop.id, 'csrsenior' + tag, 100000)) &&
+        !(await alreadyReminded(prop.id, 'csr7' + tag, 100000))) {
+      const html = line + '<p>This service issue has been open for 5 or more days and requires escalation. Please review and ensure resolution is underway.</p>' + footer
+      summary.csr5 += await sendEmail([emailOf('Alicia Bush'), emailOf('Colson Franse')], 'Escalation: Service Issue Open ' + daysOpen + ' Days - ' + prop.name, html)
+      await logAlert('csr-senior', prop.id, prop.name, label + ' out of service ' + daysOpen + ' days — escalated to Alicia Bush & Colson Franse')
+      await logReminder(prop.id, 'csrsenior' + tag)
     }
 
     // 3+ days → property RM and RSM

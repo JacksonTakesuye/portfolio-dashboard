@@ -506,6 +506,8 @@ export default function Home() {
 
   const saveSiteVisit = async () => {
     if(!detailProp || !canEditVisits) return
+    // The SiteAuditPro report is mandatory — a visit cannot be logged without it.
+    if(pendingVisitFiles.length===0){ showToast('Attach the SiteAuditPro report before logging this visit'); return }
     setSavingVisit(true)
     const today = new Date().toISOString().split('T')[0]
     const {data, error} = await supabase.from('site_visits')
@@ -2096,7 +2098,7 @@ export default function Home() {
                 )}
                 {/* Attach files/reports as part of the visit entry */}
                 <label style={{display:'block',padding:'7px',background:'#eff6ff',color:'#2563eb',borderRadius:'6px',fontSize:'11px',fontWeight:'600',textAlign:'center',cursor:'pointer',marginBottom:'6px'}}>
-                  + Attach Report / Document / Photo
+                  + Attach SiteAuditPro Report (required)
                   <input type='file' multiple style={{display:'none'}} onChange={e=>{
                     const files = Array.from(e.target.files||[])
                     if(files.length) setPendingVisitFiles(prev=>[...prev,...files])
@@ -2114,8 +2116,8 @@ export default function Home() {
                     <div style={{fontSize:'9px',color:'#94a3b8'}}>{pendingVisitFiles.length} file{pendingVisitFiles.length===1?'':'s'} will upload when you log the visit.</div>
                   </div>
                 )}
-                <button onClick={saveSiteVisit} disabled={savingVisit} style={{width:'100%',padding:'8px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>
-                  {savingVisit?'Saving...':'Log Visit'}
+                <button onClick={saveSiteVisit} disabled={savingVisit||pendingVisitFiles.length===0} style={{width:'100%',padding:'8px',background:(pendingVisitFiles.length===0?'#cbd5e1':'#3b82f6'),color:'#fff',border:'none',borderRadius:'6px',fontSize:'12px',fontWeight:'600',cursor:(pendingVisitFiles.length===0?'not-allowed':'pointer')}}>
+                  {savingVisit?'Saving...':(pendingVisitFiles.length===0?'Attach report to continue':'Log Visit')}
                 </button>
               </div>
             ) : (
@@ -2236,11 +2238,14 @@ export default function Home() {
             const isNote  = a.type==='note-added'
             const isEdit  = a.type==='psr-edited'
             const isBack  = a.type==='in-service'
-            const isHealth= a.type==='health-3day' || a.type==='health-5day'
-            const isCsr   = a.type==='csr-3day' || a.type==='csr-7day' || a.type==='csr-10day'
-            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':isBack?'#16a34a':isHealth?'#d97706':isCsr?'#dc2626':'#0369a1'
-            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':isBack?'#f0fdf4':isHealth?'#fffbeb':isCsr?'#fef2f2':'#eff6ff'
-            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':isBack?'Back In Service':a.type==='health-5day'?'Health Check Overdue':isHealth?'Health Check Due':a.type==='csr-10day'?'Service Issue — Urgent':a.type==='csr-7day'?'Service Issue — Escalated':isCsr?'Service Issue Open':'PSR Submitted'
+            const isHealth= typeof a.type==='string' && a.type.startsWith('health-')
+            // Prefix match so tier renames don't break historical alerts.
+            const isCsr   = typeof a.type==='string' && a.type.startsWith('csr')
+            const isVisitDue  = a.type==='visit-24day'
+            const isVisitLate = a.type==='visit-31day'
+            const color  = isOut?'#dc2626':isMaint?'#d97706':isNote?'#0f766e':isEdit?'#7c3aed':isBack?'#16a34a':isHealth?'#d97706':isVisitLate?'#dc2626':isVisitDue?'#d97706':isCsr?'#dc2626':'#0369a1'
+            const bg     = isOut?'#fef2f2':isMaint?'#fffbeb':isNote?'#f0fdfa':isEdit?'#f5f3ff':isBack?'#f0fdf4':isHealth?'#fffbeb':isVisitLate?'#fef2f2':isVisitDue?'#fffbeb':isCsr?'#fef2f2':'#eff6ff'
+            const label  = isOut?'Out of Service':isMaint?'Maintenance':isNote?'Note Added':isEdit?'PSR Edited':isBack?'Back In Service':a.type==='health-5day'?'Health Check Overdue':isHealth?'Health Check Due':isVisitLate?'Site Visit Overdue':isVisitDue?'Site Visit Due Soon':(a.type==='csr-exec'||a.type==='csr-10day')?'Service Issue — Urgent':(a.type==='csr-senior'||a.type==='csr-7day')?'Service Issue — Escalated':isCsr?'Service Issue Open':'PSR Submitted'
             const dateStr = a.created_at
               ? new Date(a.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
               : ''
