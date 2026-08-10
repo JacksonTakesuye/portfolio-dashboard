@@ -1,8 +1,13 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { createBrowserClient } from '@supabase/ssr'
+import { withDemoMode, enableDemoMode, disableDemoMode, demoStats } from './lib/demoMode'
 
-const supabase = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
+// Demo mode (admin only) wraps this one connection. With demo mode off this is a
+// pure pass-through and behaves exactly as before. With it on, reads still go to
+// the real database but every write is intercepted in the browser and discarded.
+// See app/lib/demoMode.ts.
+const supabase = withDemoMode(createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!))
 
 const STATUS_META: Record<string,{label:string,color:string,bg:string,border:string}> = {
   'in-service':    {label:'In Service',    color:'#16a34a', bg:'#f0fdf4', border:'#bbf7d0'},
@@ -230,6 +235,7 @@ export default function Home() {
   // ─── Role / access state (Phase C) ───
   const [userRole,      setUserRole]       = useState<string|null>(null)
   const [viewAsRole,    setViewAsRole]     = useState<string|null>(null)
+  const [demoMode,      setDemoMode]       = useState(false)
   const [myProps,       setMyProps]        = useState<string[]>([])
   const [userName,      setUserName]       = useState<string>('')
   const [userEmail,     setUserEmail]      = useState<string>('')
@@ -437,6 +443,7 @@ export default function Home() {
   }
 
   const sendMasterEmail = async (recipients:string[]) => {
+    if(demoMode){ showToast('Demo mode is on — email sending is disabled'); return }
     if(recipients.length===0){ showToast('No recipients selected'); return }
     if(!emailSubject.trim() || !emailBody.trim()){ showToast('Add a subject and a message first'); return }
     setSendingEmail(true)
@@ -467,6 +474,32 @@ export default function Home() {
   const isRealAdmin = userRole==='admin'
   const effRole  = (isRealAdmin && viewAsRole) ? viewAsRole : userRole
   const effProps = (isRealAdmin && viewAsRole) ? ['tx1'] : myProps
+
+  // ─── Demo mode (admin only) ───
+  // Turns on a browser-side simulation layer (app/lib/demoMode.ts) for training
+  // and walkthroughs. Reads still come from the real database, so the portfolio
+  // looks exactly as it does in production, but every write — records, files,
+  // notifications, emails — is intercepted and thrown away. Demo mode is always
+  // off on page load and cannot survive a refresh. Exiting reloads the page,
+  // which is what discards everything simulated during the demo.
+  const startDemo = () => {
+    if(userRole!=='admin') return
+    const active = enableDemoMode()
+    setDemoMode(active)
+    if(active){
+      setViewAsRole(null)  // a demo always runs as yourself, in your admin view
+      showToast('Demo mode on — nothing you do will be saved')
+    } else {
+      showToast('Could not start demo mode')
+    }
+  }
+  const endDemo = () => {
+    const n = demoStats.writes + demoStats.uploads + demoStats.requests
+    const ok = window.confirm('Exit demo mode?\n\n'+n+' action'+(n===1?'':'s')+' '+(n===1?'was':'were')+' simulated during this demo and will now be discarded. Nothing was saved to the database.')
+    if(!ok) return
+    disableDemoMode()
+    window.location.reload()
+  }
 
   // PEM User: a corporate read-only role. Sees the whole portfolio and the full
   // alerts feed, but cannot edit anything anywhere. Holds no property assignments.
@@ -2474,6 +2507,14 @@ export default function Home() {
   return (
     <div style={{fontFamily:'system-ui',background:'#f1f5f9',minHeight:'100vh'}}>
 
+      {/* ── Demo mode banner ── */}
+      {demoMode && (
+        <div style={{position:'sticky',top:0,zIndex:600,background:'#7c3aed',color:'#fff',padding:'8px 16px',display:'flex',alignItems:'center',justifyContent:'center',gap:'12px',fontSize:'12px',fontWeight:'700',flexWrap:'wrap' as any,textAlign:'center' as any}}>
+          <span>🎬 DEMO MODE — nothing here is being saved. No records, no files, no emails, no notifications.</span>
+          <button onClick={endDemo} style={{background:'#fff',color:'#5b21b6',border:'none',borderRadius:'6px',padding:'4px 12px',fontSize:'11px',fontWeight:'700',cursor:'pointer'}}>Exit demo</button>
+        </div>
+      )}
+
       {/* ── View-as preview banner ── */}
       {isRealAdmin && viewAsRole && (
         <div style={{position:'sticky',top:0,zIndex:500,background:'#f59e0b',color:'#1e293b',padding:'8px 16px',display:'flex',alignItems:'center',justifyContent:'center',gap:'12px',fontSize:'12px',fontWeight:'700'}}>
@@ -2521,8 +2562,17 @@ export default function Home() {
             </button>
           )}
           {!isMobile && isRealAdmin && (
-            <select value={viewAsRole||'admin'} onChange={e=>{ setViewAsRole(e.target.value==='admin'?null:e.target.value); setSelectedProp(null) }}
-              title='Preview the app as another role (visual only)'
+            <button
+              onClick={()=>{ if(demoMode){ endDemo() } else { startDemo() } }}
+              title={demoMode?'Exit demo mode and discard everything logged during the demo':'Start demo mode — log anything you like without saving it'}
+              style={{background:demoMode?'#7c3aed':'rgba(255,255,255,0.1)',color:'#f8fafc',border:'1px solid '+(demoMode?'#a78bfa':'rgba(255,255,255,0.2)'),borderRadius:'7px',padding:'7px 14px',fontSize:'12px',fontWeight:'600',cursor:'pointer',whiteSpace:'nowrap' as any}}
+            >
+              {demoMode?'Exit Demo':'🎬 Demo Mode'}
+            </button>
+          )}
+          {!isMobile && isRealAdmin && (
+            <select value={viewAsRole||'admin'} disabled={demoMode} onChange={e=>{ setViewAsRole(e.target.value==='admin'?null:e.target.value); setSelectedProp(null) }}
+              title={demoMode?'Unavailable during a demo — demos always run in your own admin view':'Preview the app as another role (visual only)'}
               style={{background:viewAsRole?'#fde68a':'rgba(255,255,255,0.1)',color:viewAsRole?'#92400e':'#f8fafc',border:'1px solid '+(viewAsRole?'#f59e0b':'rgba(255,255,255,0.2)'),borderRadius:'7px',padding:'7px 10px',fontSize:'12px',fontWeight:'600',cursor:'pointer'}}>
               <option value='admin'>View as: Admin</option>
               <option value='rm'>View as: RM</option>
@@ -2711,13 +2761,24 @@ export default function Home() {
               )}
             </div>
             {isRealAdmin && (
+              <div style={{background:'#fff',border:'1px solid '+(demoMode?'#a78bfa':'#e2e8f0'),borderRadius:'10px',padding:'16px',marginTop:'12px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+                  <span style={{fontSize:'18px'}}>🎬</span>
+                  <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>Demo Mode</div>
+                  {demoMode && <span style={{marginLeft:'auto',background:'#f5f3ff',color:'#7c3aed',border:'1px solid #ddd6fe',fontSize:'10px',fontWeight:'700',padding:'2px 8px',borderRadius:'10px'}}>On</span>}
+                </div>
+                <div style={{fontSize:'12px',color:'#64748b',lineHeight:1.5,marginBottom:'12px'}}>Show someone how the dashboard works. Log site visits, PSRs, outages, notes and files exactly as normal — none of it is saved, and it all disappears when you exit.</div>
+                <button onClick={()=>{ if(demoMode){ endDemo() } else { startDemo() } }} style={{width:'100%',padding:'10px',background:demoMode?'#7c3aed':'#0f172a',color:'#fff',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:'pointer'}}>{demoMode?'Exit Demo Mode':'Start Demo Mode'}</button>
+              </div>
+            )}
+            {isRealAdmin && (
               <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'16px',marginTop:'12px'}}>
                 <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
                   <span style={{fontSize:'18px'}}>👁️</span>
                   <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>View As</div>
                 </div>
                 <div style={{fontSize:'12px',color:'#64748b',lineHeight:1.5,marginBottom:'12px'}}>Preview the app as another role for troubleshooting (visual only — your actions still record as you). Property-scoped roles preview against The Preserve.</div>
-                <select value={viewAsRole||'admin'} onChange={e=>{ setViewAsRole(e.target.value==='admin'?null:e.target.value); setSelectedProp(null) }} style={{width:'100%',padding:'10px',borderRadius:'8px',border:'1px solid #e2e8f0',fontSize:'13px',background:'#fff'}}>
+                <select value={viewAsRole||'admin'} disabled={demoMode} onChange={e=>{ setViewAsRole(e.target.value==='admin'?null:e.target.value); setSelectedProp(null) }} style={{width:'100%',padding:'10px',borderRadius:'8px',border:'1px solid #e2e8f0',fontSize:'13px',background:'#fff'}}>
                   <option value='admin'>Admin (your role)</option>
                   <option value='rm'>Regional Manager</option>
                   <option value='rsm'>Regional Service Manager</option>
