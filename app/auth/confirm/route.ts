@@ -26,19 +26,17 @@ import type { EmailOtpType } from '@supabase/supabase-js'
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Turn Supabase's technical wording into something a Service Manager can act on.
+//
+// Note: Supabase returns ONE string — "Token has expired or is invalid" — for
+// both a genuinely old link and one that has already been used. We must not
+// claim to know which, or we send people chasing the wrong problem.
 function friendlyMessage(raw: string) {
   const m = (raw || '').toLowerCase()
-  if (m.includes('expired')) {
-    return 'This reset link has expired. Links are only good for a short time — request a new one below.'
-  }
-  if (m.includes('already') || m.includes('used')) {
-    return 'This reset link has already been used. Request a new one below.'
-  }
-  if (m.includes('invalid') || m.includes('not found')) {
-    return 'This reset link is no longer valid. It may have expired or already been used — request a new one below.'
-  }
   if (m.includes('rate') || m.includes('too many')) {
     return 'Too many attempts in a short time. Wait a few minutes, then request a new link below.'
+  }
+  if (m.includes('expired') || m.includes('invalid') || m.includes('not found')) {
+    return 'This reset link is no longer usable — it has either been used already or is too old. Request a new one below and open it within the hour.'
   }
   return raw || 'We could not verify that reset link. Request a new one below.'
 }
@@ -62,6 +60,18 @@ export async function GET(request: NextRequest) {
 
   if (!token_hash || !type) {
     return failTo('That link is incomplete. Some mail apps shorten links — request a new one below.')
+  }
+
+  // A token stamped "pkce_" was created by a browser connection running in PKCE
+  // mode. Those can only be redeemed by the one browser that asked for them, so
+  // verifying here on the server always fails — and Supabase reports that as
+  // "expired", which sends people hunting for the wrong problem.
+  //
+  // Any email still carrying one of these was sent before the reset request was
+  // switched to a non-PKCE connection (see app/login/page.tsx). Say so plainly
+  // instead of letting it fail with a misleading message.
+  if (token_hash.startsWith('pkce_')) {
+    return failTo('This link came from an older reset email that is no longer supported. Request a new one below — the new email will work.')
   }
 
   // Build the success response FIRST so Supabase can write the session cookies

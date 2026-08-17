@@ -1,7 +1,36 @@
 'use client'
 import { useState } from 'react'
 import { createBrowserClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A SECOND, SEPARATE SUPABASE CONNECTION — USED ONLY TO REQUEST A RESET EMAIL
+//
+// The main connection below (createBrowserClient) runs in "PKCE" mode, which it
+// must, because that is what keeps you signed in across pages. But PKCE also
+// changes the kind of reset token Supabase puts in the email: it comes out
+// stamped "pkce_" and can only be redeemed by the exact browser that asked for
+// it. Our /auth/confirm route redeems tokens on the server, so a pkce_ token is
+// rejected there and the person is told their link expired.
+//
+// This second connection is deliberately NOT in PKCE mode, so the reset email
+// carries a plain token that /auth/confirm can verify from anywhere. It never
+// touches the login session: persistSession is off, so it cannot overwrite or
+// interfere with the real connection.
+// ─────────────────────────────────────────────────────────────────────────────
+const resetRequestClient = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  {
+    auth: {
+      flowType: 'implicit',
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
+)
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -32,12 +61,14 @@ export default function Login() {
     }
   }
 
-  // Send the password-reset email. Supabase emails a link that lands on /reset-password.
+  // Send the password-reset email. Supabase emails a link that lands on
+  // /auth/confirm, which verifies it and forwards to /reset-password.
+  // Note this uses resetRequestClient (non-PKCE) — see the comment at the top.
   const handleForgotPassword = async () => {
     if (!email) { setError('Enter your email address first.'); return }
     setResetLoading(true)
     setError(null)
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    const { error } = await resetRequestClient.auth.resetPasswordForEmail(email, {
       redirectTo: window.location.origin + '/reset-password',
     })
     setResetLoading(false)

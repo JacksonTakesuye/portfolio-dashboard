@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { createBrowserClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +19,25 @@ import { useRouter } from 'next/navigation'
 //      password works, rather than finding out tomorrow morning.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CARD: React.CSSProperties = {background:'#fff',borderRadius:'12px',padding:'32px',width:'380px',maxWidth:'100%',border:'1px solid #e2e8f0'}
+// Separate, non-PKCE connection used ONLY by the "Send me a new link" button.
+// Must match the one in app/login/page.tsx — if a reset email is requested by a
+// PKCE connection, Supabase stamps the token "pkce_" and /auth/confirm cannot
+// verify it, which surfaces to the user as "this link has expired".
+// persistSession is off so this can never disturb the real login session.
+const resetRequestClient = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  {
+    auth: {
+      flowType: 'implicit',
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
+)
+
+const CARD: React.CSSProperties ={background:'#fff',borderRadius:'12px',padding:'32px',width:'380px',maxWidth:'100%',border:'1px solid #e2e8f0'}
 const LABEL: React.CSSProperties = {fontSize:'12px',fontWeight:600,color:'#334155',marginBottom:'6px'}
 const INPUT: React.CSSProperties = {width:'100%',padding:'8px 10px',borderRadius:'7px',border:'1px solid #e2e8f0',fontSize:'13px',boxSizing:'border-box'}
 const BUTTON: React.CSSProperties = {width:'100%',padding:'10px',background:'#3b82f6',color:'#fff',border:'none',borderRadius:'7px',fontSize:'13px',fontWeight:600,cursor:'pointer'}
@@ -120,7 +139,7 @@ export default function ResetPassword() {
     if (!resendEmail) { setError('Enter your email address first.'); return }
     setResendLoading(true)
     setError(null)
-    const { error } = await supabase.auth.resetPasswordForEmail(resendEmail, {
+    const { error } = await resetRequestClient.auth.resetPasswordForEmail(resendEmail, {
       redirectTo: window.location.origin + '/reset-password',
     })
     setResendLoading(false)
