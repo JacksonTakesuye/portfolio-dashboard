@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import VersionWatcher from "./lib/VersionWatcher";
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 export const metadata: Metadata = {
@@ -23,7 +24,12 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {/* Watches for a newer deployment and keeps this device current.
+            See app/lib/VersionWatcher.tsx. Renders nothing until an update exists. */}
+        <VersionWatcher />
+        {children}
+      </body>
     </html>
   );
 }

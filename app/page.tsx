@@ -249,6 +249,7 @@ export default function Home() {
   const [emailBody,        setEmailBody]        = useState('')
   const [sendingEmail,     setSendingEmail]     = useState(false)
   const [signingOut,    setSigningOut]     = useState(false)
+  const [refreshing,    setRefreshing]     = useState(false)
   const [notifStatus,   setNotifStatus]    = useState<'unsupported'|'default'|'granted'|'denied'>('default')
   const [enablingNotif, setEnablingNotif]  = useState(false)
   const fileInputRefs = useRef<Record<string,HTMLInputElement|null>>({})
@@ -282,6 +283,27 @@ export default function Home() {
     setSigningOut(true)
     await supabase.auth.signOut()
     window.location.href = '/login'
+  }
+
+  // ─── Refresh the app ──────────────────────────────────────────────────────────
+  // An app opened from the home screen usually resumes where it left off instead
+  // of loading fresh, so a phone can keep running an old copy of the dashboard
+  // long after a fix has gone live. This forces a clean reload.
+  //
+  // It deliberately does NOT unregister the service worker — that would switch
+  // off push notifications for this device. Signing in is unaffected too; the
+  // session lives in a cookie, so nobody gets logged out by tapping this.
+  const handleRefreshApp = async () => {
+    setRefreshing(true)
+    try {
+      if (typeof caches !== 'undefined') {
+        const keys = await caches.keys()
+        await Promise.all(keys.map(k => caches.delete(k)))
+      }
+    } catch (err) {
+      console.log('Nothing cached to clear:', err)
+    }
+    window.location.reload()
   }
 
   // ─── Load data ────────────────────────────────────────────────────────────────
@@ -2759,6 +2781,16 @@ export default function Home() {
                   {enablingNotif?'Enabling...':'Enable Notifications'}
                 </button>
               )}
+            </div>
+            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:'10px',padding:'16px',marginTop:'12px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px'}}>
+                <span style={{fontSize:'18px'}}>🔄</span>
+                <div style={{fontWeight:'700',fontSize:'14px',color:'#1e293b'}}>Refresh App</div>
+              </div>
+              <div style={{fontSize:'12px',color:'#64748b',lineHeight:1.5,marginBottom:'12px'}}>Loads the newest version of the dashboard. Use this if something looks out of date or isn&rsquo;t working right, or if you&rsquo;ve been asked to update. You won&rsquo;t be signed out and your notifications stay on.</div>
+              <button onClick={handleRefreshApp} disabled={refreshing} style={{width:'100%',padding:'10px',background:'#0f172a',color:'#fff',border:'none',borderRadius:'8px',fontSize:'13px',fontWeight:'600',cursor:refreshing?'default':'pointer'}}>
+                {refreshing?'Refreshing...':'Refresh App'}
+              </button>
             </div>
             {isRealAdmin && (
               <div style={{background:'#fff',border:'1px solid '+(demoMode?'#a78bfa':'#e2e8f0'),borderRadius:'10px',padding:'16px',marginTop:'12px'}}>
