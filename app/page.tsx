@@ -42,8 +42,8 @@ const abbr = (state:string) => STATE_ABBR[state] || state
 
 // Human-friendly labels for PSR fields, used when building the change summary
 const PSR_FIELD_LABELS: Record<string,string> = {
-  work_orders_total:'Work Orders Total', work_orders_over_48h:'Work Orders Over 48h', work_orders_explanation:'Work Orders Explanation',
-  make_readies_total:'Make Readies Total', make_readies_over_7d:'Make Readies Over 7 Days',
+  work_orders_total:'Work Orders Total', work_orders_over_48h:'Work Orders Over 48h (0 if none)', work_orders_explanation:'Work Orders Explanation',
+  make_readies_total:'Make Readies Total', make_readies_over_7d:'Make Readies Over 7 Days (0 if none)',
   oncall_staff:'On-Call Staff', vacation_pto:'Vacation / PTO', shop_steward:'Shop Steward', preventative_maintenance:'Preventative Maintenance', open_maintenance_position:'Open Maintenance Position',
   pool_operational:'Pool Status', spa_operational:'Spa Status', chemical_levels_checked:'Chemical Levels Checked', cya_tracking_updated:'CYA Tracking Updated', pool_furniture_condition:'Pool Furniture Condition', pool_gates_secured:'Pool Gates Secured', pool_area_cleanliness:'Pool Area Cleanliness', pool_spa_notes:'Pool / Spa Notes',
   fitness_equipment:'Equipment Condition', fitness_cleanliness:'Cleanliness', fitness_supplies_stocked:'Supplies Stocked', fitness_access_control:'Access Control', fitness_notes:'Fitness Notes',
@@ -92,6 +92,52 @@ const SID = (label:string, f:string, form:any, setForm:any) => (
     <input type='date' value={form[f]||''} onChange={e=>setForm((p:any)=>({...p,[f]:e.target.value}))} style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',boxSizing:'border-box' as any}}/>
   </div>
 )
+
+// Whole-number input, for the PSR fields the database stores as a count.
+//
+// Why this exists: these four boxes used to be plain text, and a question worded
+// like "Work Orders Over 48h" invites the answer "No" from someone who has none
+// overdue. The column only accepts numbers, so the whole report was rejected —
+// with an error naming a type, not a field, wherever the person happened to be
+// scrolled to. A number box makes that impossible and brings up the numeric
+// keypad on a phone.
+//
+// Left blank is stored as null (genuinely unanswered), never as text.
+const SNUM = (label:string, f:string, form:any, setForm:any) => (
+  <div style={{marginBottom:'6px'}}>
+    <div style={{fontSize:'10px',color:'#94a3b8',marginBottom:'2px'}}>{label}</div>
+    <input
+      type='number'
+      inputMode='numeric'
+      min={0}
+      step={1}
+      placeholder='0'
+      value={form[f] ?? ''}
+      onChange={e=>{
+        const v = e.target.value
+        setForm((p:any)=>({...p, [f]: v==='' ? null : Math.max(0, Math.floor(Number(v)||0))}))
+      }}
+      style={{width:'100%',padding:'5px 8px',borderRadius:'5px',border:'1px solid #e2e8f0',fontSize:'12px',boxSizing:'border-box' as any}}
+    />
+  </div>
+)
+
+// Raw database errors mean nothing to someone standing at a dog station in
+// Clarksville. Translate the ones we recognise and name the section to check.
+const friendlyPsrError = (msg:string) => {
+  const m = (msg||'').toLowerCase()
+  if(m.includes('invalid input syntax for type integer'))
+    return 'Could not save — the Work Orders and Make Readies boxes need a number. Enter 0 if there are none.'
+  if(m.includes('invalid input syntax for type boolean'))
+    return 'Could not save — one of the tick boxes has an unexpected value. Untick and retick it, then try again.'
+  if(m.includes('invalid input syntax for type date'))
+    return 'Could not save — one of the date boxes is not a valid date.'
+  if(m.includes('duplicate key'))
+    return 'A report for this property and date already exists. Open it from the history list and edit that one instead.'
+  if(m.includes('row-level security'))
+    return 'Could not save — you do not have permission for this property. Contact an admin.'
+  return 'Could not save: ' + msg
+}
 
 const CB = (label:string, f:string, form:any, setForm:any) => (
   <div style={{display:'flex',alignItems:'center',gap:'6px',marginBottom:'6px'}}>
@@ -870,7 +916,7 @@ export default function Home() {
     if(!detailProp) return
     setSavingPsr(true)
     const {data, error} = await supabase.from('psr_reports').insert({...psrForm, property_id:detailProp.id, report_date:new Date().toISOString().split('T')[0]}).select()
-    if(error){ showToast('Error: '+error.message); setSavingPsr(false); return }
+    if(error){ showToast(friendlyPsrError(error.message)); setSavingPsr(false); return }
     const saved = data&&data[0]
     showToast('PSR saved')
     setAllPsrReports((prev:any)=>[...(data||[]),...prev])
@@ -931,7 +977,7 @@ export default function Home() {
     const combinedNote = changeSummary + (editNotes ? ' || Note: '+editNotes : '')
     const updateData = {...editPsrForm, edited_by:actor(), edited_at:new Date().toISOString(), edit_notes:combinedNote}
     const {error} = await supabase.from('psr_reports').update(updateData).eq('id',editingPsr.id)
-    if(error){ showToast('Error: '+error.message); setSavingEdit(false); return }
+    if(error){ showToast(friendlyPsrError(error.message)); setSavingEdit(false); return }
 
     showToast('PSR report updated')
     setAllPsrReports((prev:any)=>prev.map((r:any)=>r.id===editingPsr.id?{...r,...updateData}:r))
@@ -1737,11 +1783,11 @@ export default function Home() {
           {editable && psrMode==='new' && (
             <div>
               {SEC('Work Orders & Make Readies',<div>
-                {SI('Work Orders Total','work_orders_total',psrForm,setPsrForm)}
-                {SI('Work Orders Over 48h','work_orders_over_48h',psrForm,setPsrForm)}
+                {SNUM('Work Orders Total','work_orders_total',psrForm,setPsrForm)}
+                {SNUM('Work Orders Over 48h (0 if none)','work_orders_over_48h',psrForm,setPsrForm)}
                 {SI('Work Orders Explanation','work_orders_explanation',psrForm,setPsrForm)}
-                {SI('Make Readies Total','make_readies_total',psrForm,setPsrForm)}
-                {SI('Make Readies Over 7 Days','make_readies_over_7d',psrForm,setPsrForm)}
+                {SNUM('Make Readies Total','make_readies_total',psrForm,setPsrForm)}
+                {SNUM('Make Readies Over 7 Days (0 if none)','make_readies_over_7d',psrForm,setPsrForm)}
               </div>)}
               {SEC('Staffing',<div>
                 {SI('On-Call Staff','oncall_staff',psrForm,setPsrForm)}
@@ -1843,11 +1889,11 @@ export default function Home() {
             <div>
               <div style={{fontWeight:'600',fontSize:'12px',color:'#1e293b',marginBottom:'10px'}}>Editing: {editingPsr.report_date}</div>
               {SEC('Work Orders & Make Readies',<div>
-                {SI('Work Orders Total','work_orders_total',editPsrForm,setEditPsrForm)}
-                {SI('Work Orders Over 48h','work_orders_over_48h',editPsrForm,setEditPsrForm)}
+                {SNUM('Work Orders Total','work_orders_total',editPsrForm,setEditPsrForm)}
+                {SNUM('Work Orders Over 48h (0 if none)','work_orders_over_48h',editPsrForm,setEditPsrForm)}
                 {SI('Work Orders Explanation','work_orders_explanation',editPsrForm,setEditPsrForm)}
-                {SI('Make Readies Total','make_readies_total',editPsrForm,setEditPsrForm)}
-                {SI('Make Readies Over 7 Days','make_readies_over_7d',editPsrForm,setEditPsrForm)}
+                {SNUM('Make Readies Total','make_readies_total',editPsrForm,setEditPsrForm)}
+                {SNUM('Make Readies Over 7 Days (0 if none)','make_readies_over_7d',editPsrForm,setEditPsrForm)}
               </div>)}
               {SEC('Staffing',<div>
                 {SI('On-Call Staff','oncall_staff',editPsrForm,setEditPsrForm)}
