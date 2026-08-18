@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createBrowserClient } from '@supabase/ssr'
 import { withDemoMode, enableDemoMode, disableDemoMode, demoStats } from './lib/demoMode'
+import { exportSystemsOutToExcel } from './lib/exportSystemsOut'
 
 // Demo mode (admin only) wraps this one connection. With demo mode off this is a
 // pure pass-through and behaves exactly as before. With it on, reads still go to
@@ -261,6 +262,8 @@ export default function Home() {
   const [systemsOutFilterType,  setSystemsOutFilterType]  = useState<'state'|'rm'|'rsm'>('state')
   const [systemsOutFilterValue, setSystemsOutFilterValue] = useState('all')
   const [expandedOutRow, setExpandedOutRow] = useState<string|null>(null)
+  // True while the Excel file is being built, so the Export button can show progress
+  const [exportingXlsx, setExportingXlsx] = useState(false)
   // ─── Admin delete: holds the entry pending confirmation ───
   // shape: {kind, label, run:()=>Promise<void>}
   const [pendingDelete, setPendingDelete] = useState<any>(null)
@@ -2433,6 +2436,36 @@ export default function Home() {
     const outRows   = sortRows(visibleRows.filter((r:any)=>r.status==='out-of-service'))
     const maintRows = sortRows(visibleRows.filter((r:any)=>r.status==='maintenance'))
 
+    // Plain-English description of exactly what this export covers, printed under
+    // the title inside the spreadsheet so a file forwarded by email explains itself.
+    const exportScopeLabel = (() => {
+      const base = seesAllProperties ? 'All properties' : 'Your assigned properties'
+      if(!seesAllProperties || systemsOutFilterValue==='all') return base
+      const label = systemsOutFilterType==='state' ? 'State'
+                  : systemsOutFilterType==='rm'    ? 'RM Region'
+                  : 'RSM Region'
+      return base + ' · Filtered by ' + label + ': ' + systemsOutFilterValue
+    })()
+
+    // Builds the .xlsx from exactly the rows on screen, in the order shown.
+    const handleExportXlsx = async () => {
+      if(exportingXlsx) return
+      setExportingXlsx(true)
+      try {
+        await exportSystemsOutToExcel({
+          outRows, maintRows, eventCosts, eventVendors,
+          stateAbbr: abbr,
+          scopeLabel: exportScopeLabel,
+          exportedBy: actor(),
+        })
+      } catch (err) {
+        console.error('Systems Out export failed:', err)
+        alert('Sorry — the Excel file could not be created. Please try again.')
+      } finally {
+        setExportingXlsx(false)
+      }
+    }
+
     const daysSince = (ts:string|null) => {
       if(!ts) return ''
       const d = Math.floor((Date.now()-new Date(ts).getTime())/86400000)
@@ -2499,6 +2532,24 @@ export default function Home() {
               <div style={{color:'#64748b',fontSize:'11px'}}>{seesAllProperties?'All properties':'Your assigned properties'}</div>
             </div>
           </div>
+          {/* Export the rows currently on screen to a formatted Excel file */}
+          <button
+            onClick={handleExportXlsx}
+            disabled={exportingXlsx || (outRows.length===0 && maintRows.length===0)}
+            title='Download the systems shown below as an Excel file'
+            style={{
+              display:'flex',alignItems:'center',gap:'6px',
+              background:(outRows.length===0&&maintRows.length===0)?'rgba(255,255,255,0.08)':'#16a34a',
+              border:'none',borderRadius:'20px',
+              padding:isMobile?'7px 12px':'8px 16px',
+              color:(outRows.length===0&&maintRows.length===0)?'#64748b':'#fff',
+              fontSize:isMobile?'11px':'12px',fontWeight:'600',
+              cursor:(exportingXlsx||(outRows.length===0&&maintRows.length===0))?'default':'pointer',
+              opacity:exportingXlsx?0.7:1,
+            }}
+          >
+            {exportingXlsx ? 'Building…' : (isMobile ? '⬇ Excel' : '⬇ Export to Excel')}
+          </button>
         </div>
         {/* Sort + filter control */}
         <div style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0',padding:isMobile?'8px 12px':'8px 24px',display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap' as any}}>
